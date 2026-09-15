@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/metrics"
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/netdev"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/runner"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject"
@@ -219,8 +220,8 @@ func makeSubject(config protocol.Config) subject.Subject {
 type processProvider interface{ ProcessID() int }
 
 func measure(ctx context.Context, config protocol.Config, selected subject.Subject, index int, warmup bool, proof protocol.PathProof) (protocol.Repetition, error) {
-	var systemBefore metrics.SystemSnapshot
-	var systemAfter metrics.SystemSnapshot
+	var hostBefore metrics.HostSnapshot
+	var hostAfter metrics.HostSnapshot
 	var subjectBefore metrics.ProcessSnapshot
 	var subjectAfter metrics.ProcessSnapshot
 	var subjectDeltaErr error
@@ -229,7 +230,7 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 	workerResult, workloadErr := worker.RunProcess(ctx, "", worker.TemporaryRoot(config.Execution.TemporaryDirectory), request, worker.ProcessHooks{
 		BeforeStart: func(ready worker.Ready) error {
 			var err error
-			systemBefore, err = metrics.ReadSystem()
+			hostBefore, err = metrics.ReadHost(measuredInterfaces(config))
 			if err != nil {
 				return err
 			}
@@ -240,7 +241,7 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 		},
 		AfterWorkload: func() error {
 			var err error
-			systemAfter, err = metrics.ReadSystem()
+			hostAfter, err = metrics.ReadHost(measuredInterfaces(config))
 			if err != nil {
 				return err
 			}
@@ -253,7 +254,7 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 	if workerResult.Workload.Timing.StartedAt.IsZero() {
 		return protocol.Repetition{}, workloadErr
 	}
-	systemDelta, systemDeltaErr := metrics.SystemDelta(systemBefore, systemAfter)
+	hostDelta, systemDeltaErr := metrics.HostDelta(hostBefore, hostAfter)
 	var subjectDelta metrics.ProcessSnapshot
 	if hasProcess && provider.ProcessID() > 0 {
 		subjectDelta, subjectDeltaErr = metrics.ProcessDelta(subjectBefore, subjectAfter)
@@ -273,14 +274,54 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 		Resources: protocol.ResourceDelta{
 			WallNanoseconds: duration.Nanoseconds(), ClientUserTicks: workerResult.Process.UserTicks, ClientSystemTicks: workerResult.Process.SystemTicks,
 			ClientReadBytes: workerResult.Process.ReadBytes, ClientWriteBytes: workerResult.Process.WriteBytes, ClientRSSBytes: workerResult.Process.RSSBytes,
-			ClientRunNanoseconds: workerResult.Process.RunNanoseconds,
-			SubjectUserTicks:     subjectDelta.UserTicks, SubjectSystemTicks: subjectDelta.SystemTicks, SubjectReadBytes: subjectDelta.ReadBytes,
+			ClientRunNanoseconds: workerResult.Process.RunNanoseconds, ClientPSSBytes: workerResult.Process.PSSBytes,
+			ClientUSSBytes: workerResult.Process.USSBytes, ClientHighWaterRSSBytes: workerResult.Process.HighWaterRSSBytes,
+			ClientSwapBytes: workerResult.Process.SwapBytes, ClientMinorFaults: workerResult.Process.MinorFaults,
+			ClientMajorFaults: workerResult.Process.MajorFaults, ClientVoluntarySwitches: workerResult.Process.VoluntarySwitches,
+			ClientInvoluntarySwitches: workerResult.Process.InvoluntarySwitches, ClientThreads: workerResult.Process.Threads,
+			ClientFileDescriptors: workerResult.Process.FileDescriptors, ClientSocketDescriptors: workerResult.Process.SocketFileDescriptors,
+			SubjectUserTicks: subjectDelta.UserTicks, SubjectSystemTicks: subjectDelta.SystemTicks, SubjectReadBytes: subjectDelta.ReadBytes,
 			SubjectRunNanoseconds: subjectDelta.RunNanoseconds,
-			SubjectWriteBytes:     subjectDelta.WriteBytes, SubjectRSSBytes: subjectDelta.RSSBytes, SystemCPUTicks: systemDelta.CPUTicks,
-			SystemSoftIRQs: systemDelta.SoftIRQs, SystemContextSwitches: systemDelta.ContextSwitches, SystemProcessesCreated: systemDelta.Processes,
+			SubjectWriteBytes:     subjectDelta.WriteBytes, SubjectRSSBytes: subjectDelta.RSSBytes, SubjectPSSBytes: subjectDelta.PSSBytes,
+			SubjectUSSBytes: subjectDelta.USSBytes, SubjectHighWaterRSSBytes: subjectDelta.HighWaterRSSBytes, SubjectSwapBytes: subjectDelta.SwapBytes,
+			SubjectMinorFaults: subjectDelta.MinorFaults, SubjectMajorFaults: subjectDelta.MajorFaults,
+			SubjectVoluntarySwitches: subjectDelta.VoluntarySwitches, SubjectInvoluntarySwitches: subjectDelta.InvoluntarySwitches,
+			SubjectThreads: subjectDelta.Threads, SubjectFileDescriptors: subjectDelta.FileDescriptors, SubjectSocketDescriptors: subjectDelta.SocketFileDescriptors,
+			SystemCPUTicks: hostDelta.System.CPUTicks, SystemCPUByCore: hostDelta.System.CPUByCore,
+			SystemSoftIRQs: hostDelta.System.SoftIRQs, SystemContextSwitches: hostDelta.System.ContextSwitches,
+			SystemProcessesCreated: hostDelta.System.Processes, SystemPageFaults: hostDelta.System.PageFaults,
+			SystemMajorPageFaults: hostDelta.System.MajorPageFaults, SystemMigrations: hostDelta.System.Migrations,
+			Interfaces: convertInterfaces(hostDelta.Interfaces), ThermalBefore: hostBefore.Thermal, ThermalAfter: hostAfter.Thermal,
+			CPUFrequencyBefore: hostBefore.CPUFrequency, CPUFrequencyAfter: hostAfter.CPUFrequency,
+			ConntrackCountBefore: hostBefore.ConntrackCount, ConntrackCountAfter: hostAfter.ConntrackCount,
 		},
 	}
 	return result, err
+}
+
+func measuredInterfaces(config protocol.Config) []string {
+	interfaces := make([]string, 0, 2)
+	if config.Subject.OutboundInterface != "" {
+		interfaces = append(interfaces, config.Subject.OutboundInterface)
+	}
+	if config.Subject.Kind == protocol.SubjectTun || config.Subject.Kind == protocol.SubjectTunAuto {
+		interfaces = append(interfaces, config.Subject.TunName)
+	}
+	return interfaces
+}
+
+func convertInterfaces(source map[string]netdev.Stats) map[string]protocol.InterfaceCounters {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string]protocol.InterfaceCounters, len(source))
+	for name, stats := range source {
+		result[name] = protocol.InterfaceCounters{
+			RXBytes: stats.RXBytes, RXPackets: stats.RXPackets, RXErrors: stats.RXErrors, RXDropped: stats.RXDropped,
+			TXBytes: stats.TXBytes, TXPackets: stats.TXPackets, TXErrors: stats.TXErrors, TXDropped: stats.TXDropped,
+		}
+	}
+	return result
 }
 
 func runWarmup(ctx context.Context, config protocol.Config, index int) (subject.WarmupEvidence, error) {

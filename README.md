@@ -10,7 +10,10 @@
 - `raw`、`direct`、`redirect`、`tproxy`、`tun`、`tun-auto-redirect`、
   `ebpf-tc`、`ebpf-cgroup` 全部八个 subject；
 - sing-box 配置生成、配置检查、子进程管理和 eBPF Clash API 运行时诊断；
-- 客户端、sing-box 进程、整机 CPU 和 NET_RX/NET_TX softirq 分账；
+- 客户端与 sing-box 的 CPU、I/O、RSS/PSS/USS/HWM/swap、fault、context switch、
+  thread/FD/socket 分账；
+- 整机及逐核 CPU、NET_RX/NET_TX softirq、fault、migration、conntrack、指定接口
+  bytes/packets/drop/error，以及温度和 CPU 频率前后快照；
 - 任一步失败后仍执行 Stop、Cleanup、VerifyRestore 的事务生命周期测试；
 - 捕获 SIGINT/SIGTERM 后进入有界清理，并为每个阶段记录起止时间和错误；
 - 在删除临时状态前保存脱敏配置、内核探测、stdout、stderr 及 SHA-256；
@@ -29,7 +32,7 @@ eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力
 性能执行链已经验证完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
 `/ebpf/` 诊断，所有 subject 必须使用同一份二进制以保持公平。
 
-尚未实现 USB gadget 配置、能耗、BPF map 内存和统计汇总。当前输出只适合验证工具和
+尚未实现 USB gadget 配置、直接能耗、BPF map 内存和统计汇总。当前输出只适合验证工具和
 收集原始样本，不适合发布性能排名。
 
 本机最小闭环示例：
