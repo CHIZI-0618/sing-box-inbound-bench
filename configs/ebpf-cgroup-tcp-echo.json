@@ -1,0 +1,28 @@
+{
+  "protocol_version": "inbound-bench/v1",
+  "run_id": "example-ebpf-cgroup-tcp",
+  "subject": {
+    "kind": "ebpf-cgroup",
+    "sing_box_binary": "/data/local/tmp/sing-box/inbound-bench-run/sing-box",
+    "cgroup_path": "/sys/fs/cgroup/inbound-bench-run",
+    "include_uid": [2000],
+    "api_listen": "127.0.0.1:19091",
+    "api_token": "replace-with-a-per-run-secret"
+  },
+  "workload": {
+    "protocol": "tcp",
+    "mode": "echo",
+    "target": "192.0.2.2:19090",
+    "payload_bytes": 64,
+    "requests": 20000,
+    "connections": 1,
+    "flows": 1,
+    "timeout_ms": 2000
+  },
+  "execution": {
+    "warmup_repetitions": 1,
+    "repetitions": 5,
+    "output_directory": "/data/local/tmp/sing-box/inbound-bench-run/results",
+    "temporary_directory": "/data/local/tmp/sing-box/inbound-bench-run/state"
+  }
+}

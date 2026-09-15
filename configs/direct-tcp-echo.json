@@ -1,0 +1,25 @@
+{
+  "protocol_version": "inbound-bench/v1",
+  "run_id": "example-direct-tcp",
+  "subject": {
+    "kind": "direct",
+    "sing_box_binary": "/path/to/sing-box",
+    "listen": "127.0.0.1:19092",
+    "target": "192.0.2.2:19090"
+  },
+  "workload": {
+    "protocol": "tcp",
+    "mode": "echo",
+    "target": "127.0.0.1:19092",
+    "payload_bytes": 64,
+    "requests": 20000,
+    "connections": 1,
+    "flows": 1,
+    "timeout_ms": 2000
+  },
+  "execution": {
+    "warmup_repetitions": 1,
+    "repetitions": 5,
+    "output_directory": "results"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CHIZI-0618/sing-box-inbound-bench/schema/result.schema.json",
+  "title": "sing-box inbound benchmark raw repetition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "run_id", "subject", "index", "warmup", "started_at", "duration_ns", "counters", "resources", "path_proof", "validity"],
+  "properties": {
+    "protocol_version": { "const": "inbound-bench/v1" },
+    "run_id": { "type": "string" },
+    "subject": { "enum": ["raw", "direct", "ebpf-tc", "ebpf-cgroup"] },
+    "index": { "type": "integer", "minimum": 0 },
+    "warmup": { "type": "boolean" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "duration_ns": { "type": "integer", "minimum": 0 },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operations", "failed", "bytes_sent", "bytes_received"],
+      "properties": {
+        "operations": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "bytes_sent": { "type": "integer", "minimum": 0 },
+        "bytes_received": { "type": "integer", "minimum": 0 },
+        "packets_sent": { "type": "integer", "minimum": 0 },
+        "packets_received": { "type": "integer", "minimum": 0 },
+        "lost": { "type": "integer", "minimum": 0 },
+        "reordered": { "type": "integer", "minimum": 0 },
+        "corrupt": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "latency_ns": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_nanoseconds"],
+      "properties": {
+        "wall_nanoseconds": { "type": "integer", "minimum": 0 },
+        "client_user_ticks": { "type": "integer", "minimum": 0 },
+        "client_system_ticks": { "type": "integer", "minimum": 0 },
+        "client_run_nanoseconds": { "type": "integer", "minimum": 0 },
+        "client_read_bytes": { "type": "integer", "minimum": 0 },
+        "client_write_bytes": { "type": "integer", "minimum": 0 },
+        "client_rss_bytes": { "type": "integer", "minimum": 0 },
+        "subject_user_ticks": { "type": "integer", "minimum": 0 },
+        "subject_system_ticks": { "type": "integer", "minimum": 0 },
+        "subject_run_nanoseconds": { "type": "integer", "minimum": 0 },
+        "subject_read_bytes": { "type": "integer", "minimum": 0 },
+        "subject_write_bytes": { "type": "integer", "minimum": 0 },
+        "subject_rss_bytes": { "type": "integer", "minimum": 0 },
+        "system_cpu_ticks": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "system_softirqs": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "system_context_switches": { "type": "integer", "minimum": 0 },
+        "system_processes_created": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "path_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valid", "method", "observed_at"],
+      "properties": {
+        "valid": { "type": "boolean" },
+        "method": { "type": "string" },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "before": {},
+        "after": {},
+        "evidence": {},
+        "error": { "type": "string" }
+      }
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valid"],
+      "properties": {
+        "valid": { "type": "boolean" },
+        "reasons": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "metadata": {}
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "protocol_version": "inbound-bench/v1",
+  "run_id": "example-raw-tcp",
+  "subject": {
+    "kind": "raw"
+  },
+  "workload": {
+    "protocol": "tcp",
+    "mode": "echo",
+    "target": "127.0.0.1:19090",
+    "payload_bytes": 64,
+    "requests": 1000,
+    "connections": 1,
+    "flows": 1,
+    "timeout_ms": 2000
+  },
+  "execution": {
+    "warmup_repetitions": 1,
+    "repetitions": 5,
+    "output_directory": "results"
+  }
+}

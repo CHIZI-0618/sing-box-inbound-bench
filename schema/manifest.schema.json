@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CHIZI-0618/sing-box-inbound-bench/schema/manifest.schema.json",
+  "title": "sing-box inbound benchmark manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "run_id", "created_at", "tool_version", "go_version", "goos", "goarch", "subject"],
+  "properties": {
+    "protocol_version": { "const": "inbound-bench/v1" },
+    "run_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "tool_version": { "type": "string" },
+    "go_version": { "type": "string" },
+    "goos": { "type": "string" },
+    "goarch": { "type": "string" },
+    "hostname": { "type": "string" },
+    "subject": { "enum": ["raw", "direct", "ebpf-tc", "ebpf-cgroup"] },
+    "topology": { "type": "string" },
+    "properties": { "type": "object", "additionalProperties": { "type": "string" } }
+  }
+}

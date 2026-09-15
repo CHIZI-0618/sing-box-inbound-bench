@@ -1,0 +1,23 @@
+{
+  "protocol_version": "inbound-bench/v1",
+  "run_id": "example-raw-udp-pps",
+  "subject": {
+    "kind": "raw"
+  },
+  "workload": {
+    "protocol": "udp",
+    "mode": "pps",
+    "target": "192.0.2.2:19090",
+    "payload_bytes": 64,
+    "duration_ms": 20000,
+    "connections": 1,
+    "flows": 64,
+    "offered_pps": 10000,
+    "timeout_ms": 2000
+  },
+  "execution": {
+    "warmup_repetitions": 1,
+    "repetitions": 5,
+    "output_directory": "results"
+  }
+}
