@@ -1,0 +1,24 @@
+{
+  "protocol_version": "inbound-bench/v2",
+  "run_id": "tun-auto-redirect-tcp-echo",
+  "subject": {
+    "kind": "tun-auto-redirect",
+    "sing_box_binary": "/usr/local/bin/sing-box",
+    "tun_address": ["172.31.255.1/30"],
+    "mtu": 1500
+  },
+  "workload": {
+    "protocol": "tcp",
+    "mode": "echo",
+    "target": "192.0.2.2:19090",
+    "payload_bytes": 64,
+    "requests": 1000,
+    "connections": 1
+  },
+  "execution": {
+    "warmup_repetitions": 1,
+    "repetitions": 5,
+    "worker_uid": 2000,
+    "output_directory": "results"
+  }
+}

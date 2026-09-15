@@ -1,0 +1,23 @@
+{
+  "protocol_version": "inbound-bench/v2",
+  "run_id": "tproxy-udp-echo",
+  "subject": {
+    "kind": "tproxy",
+    "sing_box_binary": "/usr/local/bin/sing-box",
+    "listen": "127.0.0.1:15002"
+  },
+  "workload": {
+    "protocol": "udp",
+    "mode": "echo",
+    "target": "192.0.2.2:19090",
+    "payload_bytes": 64,
+    "requests": 1000,
+    "flows": 1
+  },
+  "execution": {
+    "warmup_repetitions": 1,
+    "repetitions": 5,
+    "worker_uid": 2000,
+    "output_directory": "results"
+  }
+}

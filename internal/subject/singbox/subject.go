@@ -11,12 +11,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/cgroup"
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/netdev"
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/netfilter"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject"
 )
@@ -27,6 +30,8 @@ type Managed struct {
 	Config        protocol.Config
 	Runner        CommandRunner
 	FindProcesses func([]string) ([]string, error)
+	ReadInterface func(string) (netdev.Stats, error)
+	HasSocket     func(string, uint16, bool) (bool, error)
 
 	runDirectory string
 	configPath   string
@@ -37,13 +42,14 @@ type Managed struct {
 	configHash   string
 	kernelProbe  json.RawMessage
 	httpClient   *http.Client
+	netfilter    *netfilter.Manager
 }
 
 func New(config protocol.Config, runner CommandRunner) *Managed {
 	if runner == nil {
 		runner = OSCommandRunner{}
 	}
-	return &Managed{Config: config, Runner: runner, FindProcesses: subject.FindProcesses, httpClient: &http.Client{Timeout: 2 * time.Second}}
+	return &Managed{Config: config, Runner: runner, FindProcesses: subject.FindProcesses, ReadInterface: netdev.Read, HasSocket: netdev.HasListeningSocket, httpClient: &http.Client{Timeout: 2 * time.Second}}
 }
 
 func (m *Managed) Kind() protocol.SubjectKind { return m.Config.Subject.Kind }
@@ -78,6 +84,26 @@ func (m *Managed) Preflight(ctx context.Context) error {
 	} else if len(found) > 0 {
 		return fmt.Errorf("another sing-box process is already running: %s", strings.Join(found, ", "))
 	}
+	if m.Config.Subject.Kind == protocol.SubjectRedirect || m.Config.Subject.Kind == protocol.SubjectTProxy {
+		listen, parseErr := netip.ParseAddrPort(m.Config.Subject.Listen)
+		if parseErr != nil {
+			return parseErr
+		}
+		occupied, inspectErr := m.HasSocket(string(m.Config.Workload.Protocol), listen.Port(), listen.Addr().Is6())
+		if inspectErr != nil {
+			return fmt.Errorf("inspect transparent listener: %w", inspectErr)
+		}
+		if occupied {
+			return fmt.Errorf("transparent listener port %d is already in use", listen.Port())
+		}
+	}
+	if m.Config.Subject.Kind == protocol.SubjectTun || m.Config.Subject.Kind == protocol.SubjectTunAuto {
+		if _, inspectErr := m.ReadInterface(m.Config.Subject.TunName); inspectErr == nil {
+			return fmt.Errorf("TUN interface %s already exists", m.Config.Subject.TunName)
+		} else if !errors.Is(inspectErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect TUN interface: %w", inspectErr)
+		}
+	}
 	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
 		inside, membershipErr := cgroup.ContainsPID(m.Config.Subject.CgroupPath, os.Getpid())
 		if membershipErr != nil {
@@ -109,7 +135,7 @@ func (m *Managed) Preflight(ctx context.Context) error {
 	return nil
 }
 
-func (m *Managed) Snapshot(context.Context) error {
+func (m *Managed) Snapshot(ctx context.Context) error {
 	root := m.temporaryRoot()
 	runDirectory, err := ownedRunDirectory(root, m.Config.RunID)
 	if err != nil {
@@ -121,6 +147,32 @@ func (m *Managed) Snapshot(context.Context) error {
 		return err
 	}
 	m.runDirectory = runDirectory
+	if m.Config.Subject.Kind == protocol.SubjectRedirect || m.Config.Subject.Kind == protocol.SubjectTProxy {
+		target, parseErr := netip.ParseAddrPort(m.Config.Workload.Target)
+		if parseErr != nil {
+			return parseErr
+		}
+		listen, parseErr := netip.ParseAddrPort(m.Config.Subject.Listen)
+		if parseErr != nil {
+			return parseErr
+		}
+		kind := netfilter.Redirect
+		if m.Config.Subject.Kind == protocol.SubjectTProxy {
+			kind = netfilter.TProxy
+		}
+		m.netfilter, parseErr = netfilter.New(netfilter.Config{
+			Kind: kind, RunID: m.Config.RunID, Target: target, Listen: listen,
+			WorkerUID: *m.Config.Execution.WorkerUID, Protocol: string(m.Config.Workload.Protocol),
+			FirewallBinary: m.Config.Subject.FirewallBinary, IPBinary: m.Config.Subject.IPBinary,
+			Mark: m.Config.Subject.Mark, RouteTable: m.Config.Subject.RouteTable, RulePriority: m.Config.Subject.RulePriority,
+		}, m.Runner)
+		if parseErr != nil {
+			return parseErr
+		}
+		if parseErr = m.netfilter.Snapshot(ctx); parseErr != nil {
+			return parseErr
+		}
+	}
 	return nil
 }
 
@@ -164,7 +216,19 @@ func (m *Managed) Start(ctx context.Context) error {
 		return err
 	}
 	if m.Config.Subject.Kind == protocol.SubjectDirect {
-		return m.waitDirectListener(ctx)
+		if err = m.waitListener(ctx); err != nil {
+			return err
+		}
+		return nil
+	}
+	if m.Config.Subject.Kind == protocol.SubjectRedirect || m.Config.Subject.Kind == protocol.SubjectTProxy {
+		if err = m.waitTransparentListener(ctx); err != nil {
+			return err
+		}
+		return m.netfilter.Install(ctx)
+	}
+	if m.Config.Subject.Kind == protocol.SubjectTun || m.Config.Subject.Kind == protocol.SubjectTunAuto {
+		return m.waitTunInterface(ctx)
 	}
 	if err = m.waitForSurvival(ctx, 150*time.Millisecond); err != nil {
 		return err
@@ -181,7 +245,42 @@ func (m *Managed) Start(ctx context.Context) error {
 	return nil
 }
 
-func (m *Managed) waitDirectListener(ctx context.Context) error {
+func (m *Managed) waitTransparentListener(ctx context.Context) error {
+	listen, err := netip.ParseAddrPort(m.Config.Subject.Listen)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(time.Duration(m.Config.Execution.StartupTimeoutMS) * time.Millisecond)
+	for {
+		if m.exited() {
+			return fmt.Errorf("sing-box exited during startup: %w", m.processExit)
+		}
+		ready, inspectErr := m.HasSocket(string(m.Config.Workload.Protocol), listen.Port(), listen.Addr().Is6())
+		if inspectErr != nil {
+			return fmt.Errorf("inspect transparent listener: %w", inspectErr)
+		}
+		if ready {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("transparent listener did not become ready")
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		}
+	}
+}
+
+func (m *Managed) waitListener(ctx context.Context) error {
 	deadline := time.Now().Add(time.Duration(m.Config.Execution.StartupTimeoutMS) * time.Millisecond)
 	for {
 		if m.exited() {
@@ -193,7 +292,33 @@ func (m *Managed) waitDirectListener(ctx context.Context) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("direct listener did not become ready: %w", err)
+			return fmt.Errorf("listener did not become ready: %w", err)
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		}
+	}
+}
+
+func (m *Managed) waitTunInterface(ctx context.Context) error {
+	deadline := time.Now().Add(time.Duration(m.Config.Execution.StartupTimeoutMS) * time.Millisecond)
+	for {
+		if m.exited() {
+			return fmt.Errorf("sing-box exited during startup: %w", m.processExit)
+		}
+		if _, err := m.ReadInterface(m.Config.Subject.TunName); err == nil {
+			return nil
+		} else if time.Now().After(deadline) {
+			return fmt.Errorf("TUN interface did not become ready: %w", err)
 		}
 		timer := time.NewTimer(25 * time.Millisecond)
 		select {
@@ -235,6 +360,13 @@ func (m *Managed) ObservePath(ctx context.Context) (subject.Observation, error) 
 		data, _ := json.Marshal(map[string]any{"pid": m.process.PID(), "config_sha256": m.configHash, "listener": m.Config.Subject.Listen})
 		return subject.Observation{CapturedAt: time.Now(), Data: data}, nil
 	}
+	if m.netfilter != nil {
+		data, err := m.netfilter.Observe(ctx)
+		return subject.Observation{CapturedAt: time.Now(), Data: data}, err
+	}
+	if m.Config.Subject.Kind == protocol.SubjectTun || m.Config.Subject.Kind == protocol.SubjectTunAuto {
+		return m.observeTun(ctx)
+	}
 	deadline := time.Now().Add(time.Duration(m.Config.Execution.StartupTimeoutMS) * time.Millisecond)
 	for {
 		observation, retry, err := m.observeEBPFOnce(ctx)
@@ -254,6 +386,48 @@ func (m *Managed) ObservePath(ctx context.Context) (subject.Observation, error) 
 			return subject.Observation{}, ctx.Err()
 		}
 	}
+}
+
+type tunObservation struct {
+	Interface    netdev.Stats `json:"interface"`
+	Backend      string       `json:"backend,omitempty"`
+	BackendState string       `json:"backend_state,omitempty"`
+}
+
+func (m *Managed) observeTun(ctx context.Context) (subject.Observation, error) {
+	stats, err := m.ReadInterface(m.Config.Subject.TunName)
+	if err != nil {
+		return subject.Observation{}, err
+	}
+	observation := tunObservation{Interface: stats}
+	if m.Config.Subject.Kind == protocol.SubjectTunAuto {
+		if output, nftErr := m.Runner.Run(ctx, "nft", "-j", "list", "table", "inet", "sing-box"); nftErr == nil && json.Valid(output) {
+			observation.Backend = "nftables"
+			observation.BackendState = string(bytes.TrimSpace(output))
+		} else {
+			firewall := m.Config.Subject.FirewallBinary
+			if firewall == "" {
+				firewall = "iptables"
+				if strings.Contains(m.Config.Workload.Target, "[") {
+					firewall = "ip6tables"
+				}
+			}
+			var state []string
+			for _, table := range []string{"nat", "mangle", "filter"} {
+				output, tableErr := m.Runner.Run(ctx, firewall, "-w", "-t", table, "-S")
+				if tableErr == nil && strings.Contains(string(output), "sing-box") {
+					state = append(state, string(bytes.TrimSpace(output)))
+				}
+			}
+			if len(state) == 0 {
+				return subject.Observation{}, errors.New("auto_redirect backend state was not observable")
+			}
+			observation.Backend = "iptables"
+			observation.BackendState = strings.Join(state, "\n")
+		}
+	}
+	data, err := json.Marshal(observation)
+	return subject.Observation{CapturedAt: time.Now(), Data: data}, err
 }
 
 func (m *Managed) observeEBPFOnce(ctx context.Context) (subject.Observation, bool, error) {
@@ -298,6 +472,39 @@ func (m *Managed) ProvePath(_ context.Context, before, after subject.Observation
 		}
 		return proof, nil
 	}
+	if m.netfilter != nil {
+		counterErr := m.netfilter.Prove(before.Data, after.Data)
+		socketErr := subject.ValidateSocketPathEvidence(warmup.Details, true, m.Config.Execution.WorkerUID, "")
+		proof.Method = "run-owned netfilter chain counters plus server-confirmed redirected tuple"
+		proof.Valid = counterErr == nil && socketErr == nil
+		if counterErr != nil || socketErr != nil {
+			proof.Error = errors.Join(counterErr, socketErr).Error()
+		}
+		return proof, nil
+	}
+	if m.Config.Subject.Kind == protocol.SubjectTun || m.Config.Subject.Kind == protocol.SubjectTunAuto {
+		var beforeTun, afterTun tunObservation
+		decodeErr := errors.Join(json.Unmarshal(before.Data, &beforeTun), json.Unmarshal(after.Data, &afterTun))
+		delta, deltaErr := netdev.Delta(beforeTun.Interface, afterTun.Interface)
+		socketErr := subject.ValidateSocketPathEvidence(warmup.Details, true, m.Config.Execution.WorkerUID, "")
+		activityErr := error(nil)
+		if deltaErr == nil && (delta.RXPackets == 0 || delta.TXPackets == 0) {
+			activityErr = errors.New("TUN RX/TX counters did not both increase")
+		}
+		backendErr := error(nil)
+		if m.Config.Subject.Kind == protocol.SubjectTunAuto && (beforeTun.Backend == "" || afterTun.Backend == "" || beforeTun.Backend != afterTun.Backend) {
+			backendErr = errors.New("auto_redirect backend was not stable across warmup")
+		}
+		proof.Method = "TUN RX/TX counter deltas plus server-confirmed redirected tuple"
+		if m.Config.Subject.Kind == protocol.SubjectTunAuto {
+			proof.Method = "active auto_redirect backend, TUN RX/TX counter deltas, and server-confirmed redirected tuple"
+		}
+		proof.Valid = decodeErr == nil && deltaErr == nil && activityErr == nil && backendErr == nil && socketErr == nil
+		if !proof.Valid {
+			proof.Error = errors.Join(decodeErr, deltaErr, activityErr, backendErr, socketErr).Error()
+		}
+		return proof, nil
+	}
 	valid, message, err := validateEBPFDiagnostics(after.Data, m.Config.Subject)
 	cgroupPath := ""
 	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
@@ -319,28 +526,32 @@ func (m *Managed) ProvePath(_ context.Context, before, after subject.Observation
 }
 
 func (m *Managed) Stop(ctx context.Context) error {
+	var cleanupErr error
+	if m.netfilter != nil {
+		cleanupErr = m.netfilter.Cleanup(ctx)
+	}
 	if m.process == nil || m.exited() {
-		return nil
+		return cleanupErr
 	}
 	if err := m.process.Signal(os.Interrupt); err != nil {
 		if m.exited() {
 			return nil
 		}
-		return err
+		return errors.Join(cleanupErr, err)
 	}
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
 	case m.processExit = <-m.process.Done():
-		return nil
+		return cleanupErr
 	case <-timer.C:
 		if err := m.process.Kill(); err != nil {
-			return err
+			return errors.Join(cleanupErr, err)
 		}
 		m.processExit = <-m.process.Done()
-		return nil
+		return cleanupErr
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(cleanupErr, ctx.Err())
 	}
 }
 
@@ -360,6 +571,13 @@ func (m *Managed) Artifacts(context.Context) ([]subject.Artifact, error) {
 		artifacts := []subject.Artifact{{Name: "sing-box.redacted.json", Content: content}}
 		if len(m.kernelProbe) > 0 {
 			artifacts = append(artifacts, subject.Artifact{Name: "kernel-probe.json", Content: append(append([]byte(nil), m.kernelProbe...), '\n')})
+		}
+		if m.netfilter != nil {
+			if commands, commandErr := m.netfilter.Commands(); commandErr != nil {
+				errs = append(errs, commandErr)
+			} else {
+				artifacts = append(artifacts, subject.Artifact{Name: "netfilter-commands.json", Content: append(commands, '\n')})
+			}
 		}
 		for _, name := range []string{"stdout.log", "stderr.log"} {
 			if m.runDirectory == "" {
@@ -410,8 +628,13 @@ func (m *Managed) closeLogs() error {
 	return errors.Join(errs...)
 }
 
-func (m *Managed) Cleanup(context.Context) error {
+func (m *Managed) Cleanup(ctx context.Context) error {
 	var errs []error
+	if m.netfilter != nil {
+		if err := m.netfilter.Cleanup(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if err := m.closeLogs(); err != nil {
 		errs = append(errs, err)
 	}
@@ -429,7 +652,12 @@ func (m *Managed) Cleanup(context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (m *Managed) VerifyRestore(context.Context) error {
+func (m *Managed) VerifyRestore(ctx context.Context) error {
+	if m.netfilter != nil {
+		if err := m.netfilter.VerifyRestore(ctx); err != nil {
+			return err
+		}
+	}
 	if m.process != nil && !m.exited() {
 		return errors.New("sing-box process is still running")
 	}

@@ -7,7 +7,8 @@
 - 版本化配置、manifest 和逐 repetition 结果格式；
 - 原生 TCP echo、真正单向连续流的 bulk upload/download、短连接 client/server；
 - 原生 UDP echo 与按全局速率调度的开放环固定 offered-load PPS client/server；
-- `raw`、`direct`、`ebpf-tc`、`ebpf-cgroup` subject；
+- `raw`、`direct`、`redirect`、`tproxy`、`tun`、`tun-auto-redirect`、
+  `ebpf-tc`、`ebpf-cgroup` 全部八个 subject；
 - sing-box 配置生成、配置检查、子进程管理和 eBPF Clash API 运行时诊断；
 - 客户端、sing-box 进程、整机 CPU 和 NET_RX/NET_TX softirq 分账；
 - 任一步失败后仍执行 Stop、Cleanup、VerifyRestore 的事务生命周期测试；
@@ -15,6 +16,10 @@
 - 在删除临时状态前保存脱敏配置、内核探测、stdout、stderr 及 SHA-256；
 - controller 只负责生命周期和采样，实际负载由握手后启动的独立 worker 进程产生；
 - server 回传其观察到的 peer tuple，用于区分 raw 与经 sing-box 新建 outbound 的路径；
+- redirect/TProxy 使用 run ID 专属 chain 和精确 policy rule/route，逐条登记逆操作，
+  从不 flush 或替换宿主已有 netfilter 状态；
+- TUN 等待真实接口出现，并以接口 RX/TX 增量证明数据路径；auto_redirect 还会证明
+  sing-tun 实际选择的 nftables 或 iptables backend 存在；
 - Android ADB 命令计划、dry-run 和仅允许清理 run ID 自有路径的边界测试。
 
 eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力探测、运行时 attachment
@@ -24,8 +29,8 @@ eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力
 性能执行链已经验证完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
 `/ebpf/` 诊断，所有 subject 必须使用同一份二进制以保持公平。
 
-尚未实现 redirect、TProxy、TUN、TUN + auto_redirect、USB gadget 配置、能耗、BPF map
-内存和统计汇总。当前输出只适合验证工具和收集原始样本，不适合发布性能排名。
+尚未实现 USB gadget 配置、能耗、BPF map 内存和统计汇总。当前输出只适合验证工具和
+收集原始样本，不适合发布性能排名。
 
 本机最小闭环示例：
 
@@ -346,8 +351,8 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 - `redirect`：专用 NAT chain packet/byte counters 增加；
 - `tproxy`：专用 mangle chain、mark 和 policy route counters 增加；
 - `tun`：测试 TUN RX/TX counters 增加；
-- `tun-auto-redirect`：auto_redirect backend counters 与 TUN counters 增加，且无 pre-match
-  bypass；
+- `tun-auto-redirect`：实际 auto_redirect backend 状态存在、TUN counters 增加，且配置
+  将目标限制为唯一 host route，不允许 pre-match bypass；
 - `ebpf-tc`：正确接口存在 TCX/TC attachment，UID 已验证，且 outbound tuple 发生变化；
 - `ebpf-cgroup`：正确 cgroup link 存在，worker 在创建 socket 前已进入目标 cgroup，且
   outbound tuple 发生变化。
@@ -461,8 +466,9 @@ cmd/inbound-bench/          CLI
 internal/controller/        matrix、随机化、恢复执行
 internal/subject/           subject 生命周期接口
 internal/subject/direct/    direct inbound
-internal/subject/netfilter/ redirect 与 TProxy
-internal/subject/tun/       TUN 与 auto_redirect
+internal/netfilter/         redirect 与 TProxy 的专属系统资源
+internal/netdev/            TUN/接口 counters 与监听状态
+internal/subject/singbox/   sing-box 入站配置、进程和路径证明
 internal/subject/ebpf/      local TC 与 cgroup
 internal/workload/tcp/      bulk、RTT、short、idle
 internal/workload/udp/      RTT、PPS、bulk、flow churn
@@ -489,7 +495,7 @@ Preflight -> Snapshot -> Setup -> Start -> ProvePath -> Measure -> Stop -> Colle
 2. 实现独立 TCP/UDP client/server，先验证 raw 与 direct。
 3. 实现进程、系统、温度和接口计量。
 4. 实现 eBPF cgroup 与 TC adapters，以及路径证明。
-5. 实现 redirect、TProxy、TUN 与 auto_redirect adapters。
+5. ~~实现 redirect、TProxy、TUN 与 auto_redirect adapters。~~
 6. 实现 Android ADB runner 和 USB NCM/RNDIS 点对点拓扑。
 7. 实现随机化重复、断点续跑、事务回滚和自动脱敏打包。
 8. 最后添加 CI；CI 只负责构建、单元测试、namespace 功能测试和 cleanup 验证，不把

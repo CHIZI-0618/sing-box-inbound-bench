@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,9 +25,13 @@ const (
 	SubjectDirect     SubjectKind = "direct"
 	SubjectEBPFTC     SubjectKind = "ebpf-tc"
 	SubjectEBPFCgroup SubjectKind = "ebpf-cgroup"
+	SubjectRedirect   SubjectKind = "redirect"
+	SubjectTProxy     SubjectKind = "tproxy"
+	SubjectTun        SubjectKind = "tun"
+	SubjectTunAuto    SubjectKind = "tun-auto-redirect"
 )
 
-var subjectKinds = []SubjectKind{SubjectRaw, SubjectDirect, SubjectEBPFTC, SubjectEBPFCgroup}
+var subjectKinds = []SubjectKind{SubjectRaw, SubjectDirect, SubjectRedirect, SubjectTProxy, SubjectTun, SubjectTunAuto, SubjectEBPFTC, SubjectEBPFCgroup}
 
 type WorkloadProtocol string
 
@@ -63,6 +69,14 @@ type SubjectConfig struct {
 	APIListen         string      `json:"api_listen,omitempty"`
 	APIToken          string      `json:"api_token,omitempty"`
 	ExtraArguments    []string    `json:"extra_arguments,omitempty"`
+	TunName           string      `json:"tun_name,omitempty"`
+	TunAddress        []string    `json:"tun_address,omitempty"`
+	MTU               uint32      `json:"mtu,omitempty"`
+	FirewallBinary    string      `json:"firewall_binary,omitempty"`
+	IPBinary          string      `json:"ip_binary,omitempty"`
+	Mark              uint32      `json:"mark,omitempty"`
+	RouteTable        int         `json:"route_table,omitempty"`
+	RulePriority      int         `json:"rule_priority,omitempty"`
 }
 
 type WorkloadConfig struct {
@@ -245,6 +259,25 @@ func (c *Config) ApplyDefaults() {
 	if c.Execution.StartupTimeoutMS == 0 {
 		c.Execution.StartupTimeoutMS = 10_000
 	}
+	if c.Subject.Kind == SubjectTun || c.Subject.Kind == SubjectTunAuto {
+		if c.Subject.TunName == "" {
+			c.Subject.TunName = fmt.Sprintf("sbi%08x", crc32.ChecksumIEEE([]byte(c.RunID)))
+		}
+		if c.Subject.MTU == 0 {
+			c.Subject.MTU = 1500
+		}
+	}
+	if c.Subject.Kind == SubjectTProxy {
+		if c.Subject.Mark == 0 {
+			c.Subject.Mark = 0x00800000
+		}
+		if c.Subject.RouteTable == 0 {
+			c.Subject.RouteTable = 20230
+		}
+		if c.Subject.RulePriority == 0 {
+			c.Subject.RulePriority = 12000
+		}
+	}
 }
 
 func (c Config) Validate() error {
@@ -312,6 +345,47 @@ func (c Config) Validate() error {
 	}
 	if c.Subject.Kind != SubjectRaw && c.Subject.SingBoxBinary == "" {
 		errs = append(errs, errors.New("subject.sing_box_binary is required for non-raw subjects"))
+	}
+	if c.Subject.Kind == SubjectRedirect || c.Subject.Kind == SubjectTProxy {
+		if c.Execution.WorkerUID == nil {
+			errs = append(errs, errors.New("execution.worker_uid is required for redirect and tproxy isolation"))
+		}
+		if _, _, err := net.SplitHostPort(c.Subject.Listen); err != nil {
+			errs = append(errs, fmt.Errorf("subject.listen: %w", err))
+		} else if !hostIsLoopback(c.Subject.Listen) {
+			errs = append(errs, errors.New("subject.listen must use a loopback IP for redirect and tproxy"))
+		} else if target, targetErr := netip.ParseAddrPort(c.Workload.Target); targetErr == nil {
+			listen, _ := netip.ParseAddrPort(c.Subject.Listen)
+			if listen.Addr().Is4() != target.Addr().Is4() {
+				errs = append(errs, errors.New("subject.listen and workload.target must use the same address family"))
+			}
+		}
+		if c.Subject.Kind == SubjectRedirect && c.Workload.Protocol != ProtocolTCP {
+			errs = append(errs, errors.New("redirect only supports TCP workloads"))
+		}
+		if c.Subject.Kind == SubjectTProxy && (c.Subject.Mark == 0 || c.Subject.RouteTable < 1 || c.Subject.RulePriority < 1) {
+			errs = append(errs, errors.New("tproxy mark, route_table and rule_priority must be positive"))
+		}
+	}
+	if c.Subject.Kind == SubjectTun || c.Subject.Kind == SubjectTunAuto {
+		if c.Execution.WorkerUID == nil {
+			errs = append(errs, errors.New("execution.worker_uid is required for tun isolation"))
+		}
+		if c.Subject.TunName == "" || len(c.Subject.TunName) > 15 || strings.ContainsAny(c.Subject.TunName, `/\\`) {
+			errs = append(errs, errors.New("subject.tun_name must be a Linux interface name of at most 15 characters"))
+		}
+		if len(c.Subject.TunAddress) == 0 {
+			errs = append(errs, errors.New("subject.tun_address is required for tun subjects"))
+		} else {
+			for _, address := range c.Subject.TunAddress {
+				if _, _, err := net.ParseCIDR(address); err != nil {
+					errs = append(errs, fmt.Errorf("subject.tun_address %q: %w", address, err))
+				}
+			}
+		}
+		if c.Subject.MTU < 1280 || c.Subject.MTU > 65535 {
+			errs = append(errs, errors.New("subject.mtu must be between 1280 and 65535"))
+		}
 	}
 	if c.Subject.Kind == SubjectDirect {
 		if _, _, err := net.SplitHostPort(c.Subject.Listen); err != nil {

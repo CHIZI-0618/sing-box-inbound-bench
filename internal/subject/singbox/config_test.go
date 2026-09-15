@@ -52,3 +52,54 @@ func TestGenerateDirectConfig(t *testing.T) {
 		t.Fatalf("inbound=%v", inbound)
 	}
 }
+
+func TestGenerateRedirectAndTProxyConfigs(t *testing.T) {
+	for _, kind := range []protocol.SubjectKind{protocol.SubjectRedirect, protocol.SubjectTProxy} {
+		t.Run(string(kind), func(t *testing.T) {
+			config := protocol.Config{
+				Subject:  protocol.SubjectConfig{Kind: kind, Listen: "127.0.0.1:15001"},
+				Workload: protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP},
+			}
+			content, err := GenerateConfig(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded generatedConfig
+			if err = json.Unmarshal(content, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			inbound := decoded.Inbounds[0].(map[string]any)
+			if inbound["type"] != string(kind) || inbound["listen_port"] != float64(15001) {
+				t.Fatalf("inbound=%v", inbound)
+			}
+		})
+	}
+}
+
+func TestGenerateTunConfigs(t *testing.T) {
+	uid := uint32(2000)
+	for _, kind := range []protocol.SubjectKind{protocol.SubjectTun, protocol.SubjectTunAuto} {
+		t.Run(string(kind), func(t *testing.T) {
+			config := protocol.Config{
+				Subject:  protocol.SubjectConfig{Kind: kind, TunName: "sbi0", TunAddress: []string{"172.31.255.1/30"}, MTU: 1500},
+				Workload: protocol.WorkloadConfig{Target: "192.0.2.1:9000"}, Execution: protocol.ExecutionConfig{WorkerUID: &uid},
+			}
+			content, err := GenerateConfig(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded generatedConfig
+			if err = json.Unmarshal(content, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			inbound := decoded.Inbounds[0].(map[string]any)
+			if inbound["auto_redirect"] != (kind == protocol.SubjectTunAuto) {
+				t.Fatalf("inbound=%v", inbound)
+			}
+			routes := inbound["route_address"].([]any)
+			if len(routes) != 1 || routes[0] != "192.0.2.1/32" {
+				t.Fatalf("routes=%v", routes)
+			}
+		})
+	}
+}

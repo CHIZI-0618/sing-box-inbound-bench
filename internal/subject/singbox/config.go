@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
@@ -38,6 +39,45 @@ func GenerateConfig(config protocol.Config) ([]byte, error) {
 		generated.Inbounds = []any{map[string]any{
 			"type": "direct", "tag": "benchmark-direct-in", "listen": listenHost, "listen_port": listenPort,
 			"network": []string{"tcp", "udp"}, "udp_timeout": "5m", "override_address": targetHost, "override_port": targetPort,
+		}}
+	case protocol.SubjectRedirect, protocol.SubjectTProxy:
+		listenHost, listenPort, err := splitAddress(config.Subject.Listen)
+		if err != nil {
+			return nil, fmt.Errorf("listen: %w", err)
+		}
+		inboundType := "redirect"
+		if config.Subject.Kind == protocol.SubjectTProxy {
+			inboundType = "tproxy"
+		}
+		inbound := map[string]any{
+			"type": inboundType, "tag": "benchmark-" + inboundType + "-in",
+			"listen": listenHost, "listen_port": listenPort,
+			"network": []string{string(config.Workload.Protocol)},
+		}
+		if config.Workload.Protocol == protocol.ProtocolUDP {
+			inbound["udp_timeout"] = "5m"
+			inbound["udp_mapping"] = "endpoint_independent"
+			inbound["udp_filtering"] = "endpoint_independent"
+			inbound["udp_nat_max"] = 1024
+		}
+		generated.Inbounds = []any{inbound}
+	case protocol.SubjectTun, protocol.SubjectTunAuto:
+		target, err := netip.ParseAddrPort(config.Workload.Target)
+		if err != nil {
+			return nil, fmt.Errorf("workload target: %w", err)
+		}
+		bits := 32
+		if target.Addr().Is6() {
+			bits = 128
+		}
+		generated.Inbounds = []any{map[string]any{
+			"type": "tun", "tag": "benchmark-tun-in", "interface_name": config.Subject.TunName,
+			"address": config.Subject.TunAddress, "mtu": config.Subject.MTU,
+			"auto_route": true, "auto_redirect": config.Subject.Kind == protocol.SubjectTunAuto,
+			"include_uid":   []uint32{*config.Execution.WorkerUID},
+			"route_address": []string{netip.PrefixFrom(target.Addr(), bits).String()},
+			"udp_timeout":   "5m", "udp_mapping": "endpoint_independent",
+			"udp_filtering": "endpoint_independent", "udp_nat_max": 1024,
 		}}
 	case protocol.SubjectEBPFTC, protocol.SubjectEBPFCgroup:
 		plane := "tc"
