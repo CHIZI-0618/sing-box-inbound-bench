@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,8 @@ import (
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject"
 )
+
+const maxArtifactBytes = 4 << 20
 
 type Managed struct {
 	Config        protocol.Config
@@ -150,15 +153,51 @@ func (m *Managed) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	timer := time.NewTimer(150 * time.Millisecond)
+	if m.Config.Subject.Kind == protocol.SubjectDirect {
+		return m.waitDirectListener(ctx)
+	}
+	return m.waitForSurvival(ctx, 150*time.Millisecond)
+}
+
+func (m *Managed) waitDirectListener(ctx context.Context) error {
+	deadline := time.Now().Add(time.Duration(m.Config.Execution.StartupTimeoutMS) * time.Millisecond)
+	for {
+		if m.exited() {
+			return fmt.Errorf("sing-box exited during startup: %w", m.processExit)
+		}
+		connection, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp", m.Config.Subject.Listen)
+		if err == nil {
+			_ = connection.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("direct listener did not become ready: %w", err)
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		}
+	}
+}
+
+func (m *Managed) waitForSurvival(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
 	case exitErr := <-m.process.Done():
 		m.processExit = exitErr
 		if exitErr == nil {
-			return errors.New("sing-box exited during startup")
+			m.processExit = errors.New("process exited")
 		}
-		return fmt.Errorf("sing-box exited during startup: %w", exitErr)
+		return fmt.Errorf("sing-box exited during startup: %w", m.processExit)
 	case <-timer.C:
 		return nil
 	case <-ctx.Done():
@@ -267,14 +306,76 @@ func (m *Managed) Stop(ctx context.Context) error {
 	}
 }
 
-func (m *Managed) Cleanup(context.Context) error {
+func (m *Managed) Artifacts(context.Context) ([]subject.Artifact, error) {
+	var errs []error
+	if err := m.closeLogs(); err != nil {
+		errs = append(errs, err)
+	}
+	redacted := m.Config
+	if redacted.Subject.APIToken != "" {
+		redacted.Subject.APIToken = "<redacted>"
+	}
+	if content, err := GenerateConfig(redacted); err != nil {
+		errs = append(errs, err)
+	} else {
+		content = append(content, '\n')
+		artifacts := []subject.Artifact{{Name: "sing-box.redacted.json", Content: content}}
+		if len(m.kernelProbe) > 0 {
+			artifacts = append(artifacts, subject.Artifact{Name: "kernel-probe.json", Content: append(append([]byte(nil), m.kernelProbe...), '\n')})
+		}
+		for _, name := range []string{"stdout.log", "stderr.log"} {
+			if m.runDirectory == "" {
+				continue
+			}
+			artifact, readErr := readArtifact(filepath.Join(m.runDirectory, name), name)
+			if readErr != nil {
+				if !errors.Is(readErr, os.ErrNotExist) {
+					errs = append(errs, readErr)
+				}
+				continue
+			}
+			artifacts = append(artifacts, artifact)
+		}
+		return artifacts, errors.Join(errs...)
+	}
+	return nil, errors.Join(errs...)
+}
+
+func readArtifact(path, name string) (subject.Artifact, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return subject.Artifact{}, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxArtifactBytes+1))
+	if err != nil {
+		return subject.Artifact{}, err
+	}
+	truncated := len(content) > maxArtifactBytes
+	if truncated {
+		content = content[:maxArtifactBytes]
+	}
+	return subject.Artifact{Name: name, Content: content, Truncated: truncated}, nil
+}
+
+func (m *Managed) closeLogs() error {
 	var errs []error
 	for _, file := range []*os.File{m.stdout, m.stderr} {
 		if file != nil {
-			if err := file.Close(); err != nil {
+			if err := file.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 				errs = append(errs, err)
 			}
 		}
+	}
+	m.stdout = nil
+	m.stderr = nil
+	return errors.Join(errs...)
+}
+
+func (m *Managed) Cleanup(context.Context) error {
+	var errs []error
+	if err := m.closeLogs(); err != nil {
+		errs = append(errs, err)
 	}
 	if m.runDirectory != "" {
 		root := m.temporaryRoot()

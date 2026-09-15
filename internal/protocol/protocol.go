@@ -114,6 +114,28 @@ type Validity struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
+type PhaseResult struct {
+	Name       string    `json:"name"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Success    bool      `json:"success"`
+	Error      string    `json:"error,omitempty"`
+}
+
+type ExecutionTrace struct {
+	StartedAt       time.Time     `json:"started_at"`
+	FinishedAt      time.Time     `json:"finished_at"`
+	RestoreVerified bool          `json:"restore_verified"`
+	Phases          []PhaseResult `json:"phases"`
+}
+
+type ArtifactRecord struct {
+	Name      string `json:"name"`
+	SHA256    string `json:"sha256"`
+	Size      int64  `json:"size"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
 type Counters struct {
 	Operations      uint64 `json:"operations"`
 	Failed          uint64 `json:"failed"`
@@ -147,19 +169,21 @@ type ResourceDelta struct {
 }
 
 type Repetition struct {
-	ProtocolVersion string          `json:"protocol_version"`
-	RunID           string          `json:"run_id"`
-	Subject         SubjectKind     `json:"subject"`
-	Index           int             `json:"index"`
-	Warmup          bool            `json:"warmup"`
-	StartedAt       time.Time       `json:"started_at"`
-	DurationNS      int64           `json:"duration_ns"`
-	Counters        Counters        `json:"counters"`
-	LatencyNS       []int64         `json:"latency_ns,omitempty"`
-	Resources       ResourceDelta   `json:"resources"`
-	PathProof       PathProof       `json:"path_proof"`
-	Validity        Validity        `json:"validity"`
-	Metadata        json.RawMessage `json:"metadata,omitempty"`
+	ProtocolVersion string           `json:"protocol_version"`
+	RunID           string           `json:"run_id"`
+	Subject         SubjectKind      `json:"subject"`
+	Index           int              `json:"index"`
+	Warmup          bool             `json:"warmup"`
+	StartedAt       time.Time        `json:"started_at"`
+	DurationNS      int64            `json:"duration_ns"`
+	Counters        Counters         `json:"counters"`
+	LatencyNS       []int64          `json:"latency_ns,omitempty"`
+	Resources       ResourceDelta    `json:"resources"`
+	PathProof       PathProof        `json:"path_proof"`
+	Validity        Validity         `json:"validity"`
+	Execution       ExecutionTrace   `json:"execution"`
+	Artifacts       []ArtifactRecord `json:"artifacts,omitempty"`
+	Metadata        json.RawMessage  `json:"metadata,omitempty"`
 }
 
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)

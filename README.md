@@ -11,6 +11,8 @@
 - sing-box 配置生成、配置检查、子进程管理和 eBPF Clash API 运行时诊断；
 - 客户端、sing-box 进程、整机 CPU 和 NET_RX/NET_TX softirq 分账；
 - 任一步失败后仍执行 Stop、Cleanup、VerifyRestore 的事务生命周期测试；
+- 捕获 SIGINT/SIGTERM 后进入有界清理，并为每个阶段记录起止时间和错误；
+- 在删除临时状态前保存脱敏配置、内核探测、stdout、stderr 及 SHA-256；
 - Android ADB 命令计划、dry-run 和仅允许清理 run ID 自有路径的边界测试。
 
 eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力探测、运行时 attachment
@@ -32,8 +34,9 @@ go build -o inbound-bench ./cmd/inbound-bench
 ```
 
 服务端也可使用 `udp-server`。配置解析拒绝未知字段，结果目录已经存在时拒绝覆盖；API
-token 写入结果副本前会被替换为 `<redacted>`。每个 repetition 都会重新启动被测
-sing-box，并在正式计时前完成独立的完整性预热与路径证明。
+token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每个 repetition 都会
+重新启动被测 sing-box，并在正式计时前完成独立的完整性预热与路径证明。任何阶段失败
+都会留下 invalid repetition；Stop、Cleanup 或 VerifyRestore 失败也会反向使本轮无效。
 
 本项目计划对 sing-box 的本机透明接管方案进行可复现的横向测试，并同时提供不经过
 sing-box 的裸网络基线和经过一次 sing-box 用户态转发的 `direct` 入站基线。
@@ -447,7 +450,7 @@ docs/                       测试协议、恢复和贡献说明
 subject 生命周期接口至少包含：
 
 ```text
-Preflight -> Snapshot -> Setup -> Start -> ProvePath -> Measure -> Stop -> Cleanup -> VerifyRestore
+Preflight -> Snapshot -> Setup -> Start -> ProvePath -> Measure -> Stop -> CollectArtifacts -> Cleanup -> VerifyRestore
 ```
 
 任何阶段失败都必须进入 `Cleanup` 和 `VerifyRestore`。

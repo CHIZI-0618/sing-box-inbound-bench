@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/metrics"
@@ -108,12 +110,14 @@ func runBenchmark(configPath string) error {
 	if err = protocol.WriteJSON(filepath.Join(resultDirectory, "config.json"), redacted); err != nil {
 		return err
 	}
+	runContext, stopSignals := signal.NotifyContext(context.Background(), benchmarkSignals()...)
+	defer stopSignals()
 	total := config.Execution.WarmupRepetitions + config.Execution.Repetitions
 	for index := 0; index < total; index++ {
 		warmupRepetition := index < config.Execution.WarmupRepetitions
 		selected := makeSubject(config)
 		var repetition protocol.Repetition
-		err = runner.Execute(context.Background(), selected,
+		report, executeErr := runner.Execute(runContext, selected,
 			func(ctx context.Context) (subject.WarmupEvidence, error) { return runWarmup(ctx, config, index) },
 			func(ctx context.Context, proof protocol.PathProof) error {
 				result, measureErr := measure(ctx, config, selected, index, warmupRepetition, proof)
@@ -124,16 +128,71 @@ func runBenchmark(configPath string) error {
 		if warmupRepetition {
 			name = fmt.Sprintf("warmup-%03d.json", index)
 		}
-		if repetition.ProtocolVersion != "" {
-			if writeErr := protocol.WriteJSON(filepath.Join(resultDirectory, string(config.Subject.Kind), name), repetition); writeErr != nil {
-				return writeErr
-			}
+		if repetition.ProtocolVersion == "" {
+			repetition = failedRepetition(config, index, warmupRepetition, report)
 		}
-		if err != nil {
-			return fmt.Errorf("repetition %d: %w", index, err)
+		repetition.Execution = report.Trace
+		if repetition.PathProof.ObservedAt.IsZero() {
+			repetition.PathProof = report.PathProof
+		}
+		artifactRecords, artifactErr := writeArtifacts(resultDirectory, config.Subject.Kind, strings.TrimSuffix(name, ".json"), report.Artifacts)
+		repetition.Artifacts = artifactRecords
+		executeErr = errors.Join(executeErr, artifactErr)
+		if executeErr != nil {
+			repetition.Validity.Valid = false
+			repetition.Validity.Reasons = append(repetition.Validity.Reasons, executeErr.Error())
+		}
+		if writeErr := protocol.WriteJSON(filepath.Join(resultDirectory, string(config.Subject.Kind), name), repetition); writeErr != nil {
+			return writeErr
+		}
+		if executeErr != nil {
+			return fmt.Errorf("repetition %d: %w", index, executeErr)
 		}
 	}
 	return nil
+}
+
+func failedRepetition(config protocol.Config, index int, warmup bool, report runner.Report) protocol.Repetition {
+	startedAt := report.Trace.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	finishedAt := report.Trace.FinishedAt
+	if finishedAt.IsZero() {
+		finishedAt = time.Now()
+	}
+	proof := report.PathProof
+	if proof.ObservedAt.IsZero() {
+		proof = protocol.PathProof{Valid: false, Method: "path proof phase was not reached", ObservedAt: finishedAt}
+	}
+	return protocol.Repetition{
+		ProtocolVersion: protocol.Version, RunID: config.RunID, Subject: config.Subject.Kind, Index: index, Warmup: warmup,
+		StartedAt: startedAt, DurationNS: finishedAt.Sub(startedAt).Nanoseconds(), PathProof: proof,
+		Validity: protocol.Validity{Valid: false}, Resources: protocol.ResourceDelta{WallNanoseconds: finishedAt.Sub(startedAt).Nanoseconds()},
+	}
+}
+
+func writeArtifacts(resultDirectory string, kind protocol.SubjectKind, repetition string, artifacts []subject.Artifact) ([]protocol.ArtifactRecord, error) {
+	if len(artifacts) == 0 {
+		return nil, nil
+	}
+	directory := filepath.Join(resultDirectory, string(kind), "artifacts", repetition)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return nil, err
+	}
+	records := make([]protocol.ArtifactRecord, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Name == "" || filepath.Base(artifact.Name) != artifact.Name || artifact.Name == "." {
+			return records, fmt.Errorf("invalid artifact name %q", artifact.Name)
+		}
+		path := filepath.Join(directory, artifact.Name)
+		if err := os.WriteFile(path, artifact.Content, 0o600); err != nil {
+			return records, err
+		}
+		sum := sha256.Sum256(artifact.Content)
+		records = append(records, protocol.ArtifactRecord{Name: filepath.ToSlash(filepath.Join("artifacts", repetition, artifact.Name)), SHA256: fmt.Sprintf("%x", sum), Size: int64(len(artifact.Content)), Truncated: artifact.Truncated})
+	}
+	return records, nil
 }
 
 func makeSubject(config protocol.Config) subject.Subject {
@@ -232,6 +291,6 @@ func buildVersion() string {
 }
 
 func signalContext() context.Context {
-	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, _ := signal.NotifyContext(context.Background(), benchmarkSignals()...)
 	return ctx
 }

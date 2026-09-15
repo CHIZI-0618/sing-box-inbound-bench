@@ -30,11 +30,12 @@ func (s *Subject) Preflight(context.Context) error {
 	}
 	return nil
 }
-func (*Subject) Snapshot(context.Context) error { return nil }
-func (*Subject) Setup(context.Context) error    { return nil }
-func (*Subject) Start(context.Context) error    { return nil }
-func (*Subject) Stop(context.Context) error     { return nil }
-func (*Subject) Cleanup(context.Context) error  { return nil }
+func (*Subject) Snapshot(context.Context) error                        { return nil }
+func (*Subject) Setup(context.Context) error                           { return nil }
+func (*Subject) Start(context.Context) error                           { return nil }
+func (*Subject) Stop(context.Context) error                            { return nil }
+func (*Subject) Artifacts(context.Context) ([]subject.Artifact, error) { return nil, nil }
+func (*Subject) Cleanup(context.Context) error                         { return nil }
 func (s *Subject) VerifyRestore(context.Context) error {
 	found, err := subject.FindProcesses(s.ProcessNames)
 	if err != nil {

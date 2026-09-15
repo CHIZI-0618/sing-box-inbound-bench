@@ -19,6 +19,12 @@ type WarmupEvidence struct {
 	Details json.RawMessage `json:"details,omitempty"`
 }
 
+type Artifact struct {
+	Name      string
+	Content   []byte
+	Truncated bool
+}
+
 type Subject interface {
 	Kind() protocol.SubjectKind
 	Preflight(context.Context) error
@@ -28,6 +34,7 @@ type Subject interface {
 	ObservePath(context.Context) (Observation, error)
 	ProvePath(context.Context, Observation, Observation, WarmupEvidence) (protocol.PathProof, error)
 	Stop(context.Context) error
+	Artifacts(context.Context) ([]Artifact, error)
 	Cleanup(context.Context) error
 	VerifyRestore(context.Context) error
 }

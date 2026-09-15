@@ -91,7 +91,7 @@ func TestManagedEBPFDryRunLifecycle(t *testing.T) {
 	commands := &fakeRunner{}
 	managed := New(config, commands)
 	managed.FindProcesses = func([]string) ([]string, error) { return nil, nil }
-	err := runner.Execute(context.Background(), managed,
+	_, err := runner.Execute(context.Background(), managed,
 		func(context.Context) (subject.WarmupEvidence, error) {
 			return subject.WarmupEvidence{Valid: true, Details: []byte(`{"operations":1}`)}, nil
 		},
