@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CHIZI-0618/sing-box-inbound-bench/schema/android.schema.json",
+  "title": "Android benchmark orchestration configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "remote_root", "benchmark_binary", "sing_box_binary", "matrix_config", "local_output_directory"],
+  "properties": {
+    "protocol_version": { "const": "inbound-bench/v2" },
+    "serial": { "type": "string" },
+    "adb": { "type": "string" },
+    "remote_root": { "type": "string", "pattern": "^/data/local/tmp/sing-box(?:/.*)?$" },
+    "benchmark_binary": { "type": "string", "minLength": 1 },
+    "sing_box_binary": { "type": "string", "minLength": 1 },
+    "matrix_config": { "type": "string", "minLength": 1 },
+    "local_output_directory": { "type": "string", "minLength": 1 },
+    "keep_remote": { "type": "boolean" },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "running_contains", "stop", "start"],
+      "properties": {
+        "status": { "$ref": "#/$defs/command" },
+        "running_contains": { "type": "string", "minLength": 1 },
+        "stop": { "$ref": "#/$defs/command" },
+        "start": { "$ref": "#/$defs/command" }
+      }
+    }
+  },
+  "$defs": {
+    "command": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+  }
+}

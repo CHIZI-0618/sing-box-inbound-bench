@@ -21,6 +21,7 @@ import (
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/metrics"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/netdev"
+	benchAndroid "github.com/CHIZI-0618/sing-box-inbound-bench/internal/platform/android"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/report"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/runner"
@@ -43,7 +44,7 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("usage: inbound-bench <run|matrix|summarize|tcp-server|udp-server> [options]")
+		return errors.New("usage: inbound-bench <run|matrix|summarize|android-run|tcp-server|udp-server> [options]")
 	}
 	switch arguments[0] {
 	case "run":
@@ -80,6 +81,21 @@ func run(arguments []string) error {
 			return err
 		}
 		return summarizeMatrix(matrix)
+	case "android-run":
+		flags := flag.NewFlagSet("android-run", flag.ContinueOnError)
+		configPath := flags.String("config", "", "Android orchestration JSON configuration")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if *configPath == "" {
+			return errors.New("android-run requires -config")
+		}
+		config, err := benchAndroid.ReadDeviceConfig(*configPath)
+		if err != nil {
+			return err
+		}
+		_, err = benchAndroid.RunDevice(signalContext(), config, benchAndroid.OSExecutor{Binary: config.ADB})
+		return err
 	case "tcp-server":
 		flags := flag.NewFlagSet("tcp-server", flag.ContinueOnError)
 		listen := flags.String("listen", "0.0.0.0:19090", "listen address")

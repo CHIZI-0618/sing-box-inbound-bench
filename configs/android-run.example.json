@@ -1,0 +1,11 @@
+{
+  "protocol_version": "inbound-bench/v2",
+  "serial": "replace-with-adb-serial",
+  "adb": "adb",
+  "remote_root": "/data/local/tmp/sing-box",
+  "benchmark_binary": "build/inbound-bench-android-arm64",
+  "sing_box_binary": "build/sing-box-android-arm64",
+  "matrix_config": "configs/matrix-raw-smoke.json",
+  "local_output_directory": "results/android",
+  "keep_remote": false
+}

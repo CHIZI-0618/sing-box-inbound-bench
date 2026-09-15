@@ -23,20 +23,21 @@
   从不 flush 或替换宿主已有 netfilter 状态；
 - TUN 等待真实接口出现，并以接口 RX/TX 增量证明数据路径；auto_redirect 还会证明
   sing-tun 实际选择的 nftables 或 iptables backend 存在；
-- Android ADB 命令计划、dry-run 和仅允许清理 run ID 自有路径的边界测试。
+- Android ADB root 部署、矩阵执行、结果回收、生产服务可选 stop/start，以及运行前后
+  rule/route/netfilter/link 状态审计；远端只清理 `/data/local/tmp/sing-box` 下的自有目录。
 - `matrix` 按固定 seed 在每个 repetition block 内随机化 subject，支持逐 job 断点续跑，
   并可在每个 block 前后自动执行 raw control；
 - `summarize` 仅聚合非 warmup 且 valid 的 repetition，输出 `summary.json`、
   `summary.md` 和超过 5% 的 raw 漂移告警。
 
 eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力探测、运行时 attachment
-证明和生命周期框架；它们已经有无设备 fake-runner 测试，但尚未在本仓库的自动 runner
-中完成 Android 设备部署和系统状态编排。worker 已会在创建任何 workload socket 前加入
+证明和生命周期框架；它们已经有无设备 fake-runner 测试和 Android 自动部署/恢复编排，
+但当前提交尚未连接真机完成厂商内核验证。worker 已会在创建任何 workload socket 前加入
 专用 cgroup、切换目标 UID 并向 controller 回报验证结果，但连接真机前不会宣称 eBPF
 性能执行链已经验证完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
 `/ebpf/` 诊断，所有 subject 必须使用同一份二进制以保持公平。
 
-尚未实现 USB gadget 配置、直接能耗、BPF map 内存和统计汇总。当前输出只适合验证工具和
+尚未实现自动修改 USB gadget、直接能耗和 BPF map 内存。当前输出只适合验证工具和
 收集原始样本，不适合发布性能排名。
 
 本机最小闭环示例：
@@ -65,6 +66,21 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
 
 恢复执行会比较脱敏后的完整矩阵配置；seed、case、工作负载或 subject 参数发生变化时
 会拒绝混入旧结果。每个 job 完成后以原子 rename 更新 `state.json`。
+
+Android 主机侧执行：
+
+```sh
+CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -o build/inbound-bench-android-arm64 ./cmd/inbound-bench
+go build -o inbound-bench ./cmd/inbound-bench
+./inbound-bench android-run -config configs/android-run.example.json
+```
+
+`android-run` 强制确认 `adb shell id -u` 为 0，把基准二进制、同一份 sing-box 二进制和
+重写后的矩阵放入 run ID 专属目录。若配置 `service`，status/stop/start 必须分别写成参数
+数组；runner 只在原服务确实运行时停止它，并在任何返回路径以不受原取消信号影响的超时
+上下文恢复。前后快照和远端日志始终保存在 `<matrix-id>-android-audit`。网络状态不同会令
+整个任务失败并保留两份快照。工具有意不自动切换 USB gadget、移动数据、Wi-Fi、默认路由
+或充电状态，这些设备全局动作必须由测试者按第 3 节的拓扑说明准备。
 
 本项目计划对 sing-box 的本机透明接管方案进行可复现的横向测试，并同时提供不经过
 sing-box 的裸网络基线和经过一次 sing-box 用户态转发的 `direct` 入站基线。
@@ -247,9 +263,10 @@ controller 开始采样和创建 socket。controller 与 sing-box 必须留在�
 su 2000 -c '/data/local/tmp/inbound-bench client ...'
 ```
 
-eBPF cgroup 测试应使用专用子 cgroup，只将 benchmark worker 放入其中，避免为了测试
-在 Android 根 cgroup 与 netd 竞争 attachment。当前 runner 不创建或删除 cgroup；外部
-设备编排必须预先创建配置路径，并在全部 worker 退出后按其自身事务边界回收。
+eBPF cgroup 测试使用 run-scoped 专用子 cgroup，只将 benchmark worker 放入其中，避免
+为了测试在 Android 根 cgroup 与 netd 竞争 attachment。runner 会先证明该路径不存在，
+再自行创建；全部 worker 和 sing-box 退出后只用 `rmdir` 回收该空目录，不采用递归删除，
+也不接管测试前已经存在的 cgroup。
 
 为保证不同 subject 的进程身份一致，正式矩阵中的 raw、direct、TC 与 cgroup 配置应使用
 相同的 `execution.worker_uid`；省略该字段只适合本机开发冒烟，此时 worker 继承 controller
@@ -516,7 +533,8 @@ Preflight -> Snapshot -> Setup -> Start -> ProvePath -> Measure -> Stop -> Colle
 3. 实现进程、系统、温度和接口计量。
 4. 实现 eBPF cgroup 与 TC adapters，以及路径证明。
 5. ~~实现 redirect、TProxy、TUN 与 auto_redirect adapters。~~
-6. 实现 Android ADB runner 和 USB NCM/RNDIS 点对点拓扑。
+6. ~~实现 Android ADB runner。~~ USB NCM/RNDIS 点对点拓扑保持显式人工准备，避免工具
+   擅自改变设备全局 USB 与联网状态。
 7. ~~实现随机化重复、断点续跑、事务回滚和自动脱敏矩阵。~~
 8. 最后添加 CI；CI 只负责构建、单元测试、namespace 功能测试和 cleanup 验证，不把
    共享云 runner 的性能结果发布为正式排名。
