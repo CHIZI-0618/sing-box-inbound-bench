@@ -198,9 +198,6 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 	}
 	output, matrixErr := adb.shell(ctx, remoteBench, "matrix", "-config", remoteMatrix)
 	_ = os.WriteFile(filepath.Join(result.AuditDirectory, "remote-stdout-stderr.log"), output, 0o600)
-	if matrixErr != nil {
-		return result, fmt.Errorf("remote matrix: %w", matrixErr)
-	}
 	if _, err = os.Stat(result.LocalResults); err == nil {
 		return result, fmt.Errorf("local result directory already exists: %s", result.LocalResults)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -208,12 +205,15 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 	}
 	remoteResults := path.Join(remoteDirectory, "results", matrix.MatrixID)
 	if _, err = adb.run(ctx, "pull", remoteResults, result.LocalResults); err != nil {
-		return result, err
+		return result, errors.Join(matrixErr, err)
 	}
 	if !config.KeepRemote {
 		if _, err = adb.shell(ctx, "rm", "-rf", "--", remoteDirectory); err != nil {
 			return result, fmt.Errorf("remove benchmark-owned remote directory: %w", err)
 		}
+	}
+	if matrixErr != nil {
+		return result, fmt.Errorf("remote matrix completed with invalid jobs; partial results were pulled: %w", matrixErr)
 	}
 	return result, nil
 }
