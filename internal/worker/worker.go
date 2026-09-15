@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net"
 	"os"
 	"time"
 
@@ -111,7 +112,19 @@ func Serve(ctx context.Context, request Request, input io.Reader, output io.Writ
 		return errors.New("invalid worker start token")
 	}
 	before, beforeErr := metrics.ReadProcess(os.Getpid())
-	workloadResult, workloadErr := runWorkload(ctx, request)
+	var workloadResult protocol.WorkloadResult
+	var workloadErr error
+	var idleConnections []net.Conn
+	if request.Workload.Protocol == protocol.ProtocolTCP && request.Workload.Mode == protocol.ModeIdle {
+		workloadResult, idleConnections, workloadErr = benchTCP.RunIdle(ctx, benchTCP.ClientConfig{
+			Target: request.Workload.Target, Mode: request.Workload.Mode, PayloadBytes: request.Workload.PayloadBytes,
+			Duration: time.Duration(request.Workload.DurationMS) * time.Millisecond, Connections: request.Workload.Connections,
+			Timeout: time.Duration(request.Workload.TimeoutMS) * time.Millisecond,
+		})
+		defer closeWorkerConnections(idleConnections)
+	} else {
+		workloadResult, workloadErr = runWorkload(ctx, request)
+	}
 	after, afterErr := metrics.ReadProcess(os.Getpid())
 	delta, deltaErr := metrics.ProcessDelta(before, after)
 	resultErr := errors.Join(beforeErr, workloadErr, afterErr, deltaErr)
@@ -131,10 +144,20 @@ func Serve(ctx context.Context, request Request, input io.Reader, output io.Writ
 	if scanner.Text() != "collect" {
 		return errors.New("invalid worker collect token")
 	}
+	closeWorkerConnections(idleConnections)
+	idleConnections = nil
 	if err = encoder.Encode(result); err != nil {
 		return err
 	}
 	return nil
+}
+
+func closeWorkerConnections(connections []net.Conn) {
+	for _, connection := range connections {
+		if connection != nil {
+			_ = connection.Close()
+		}
+	}
 }
 
 func runWorkload(ctx context.Context, request Request) (protocol.WorkloadResult, error) {

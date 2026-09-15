@@ -61,7 +61,7 @@
       "required": ["protocol", "mode", "target", "payload_bytes"],
       "properties": {
         "protocol": { "enum": ["tcp", "udp"] },
-        "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short", "pps"] },
+        "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short", "idle", "pps"] },
         "target": { "type": "string" },
         "payload_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
         "requests": { "type": "integer", "minimum": 0 },
@@ -80,7 +80,7 @@
         },
         {
           "if": { "properties": { "protocol": { "const": "tcp" } }, "required": ["protocol"] },
-          "then": { "properties": { "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short"] } } }
+          "then": { "properties": { "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short", "idle"] } } }
         },
         {
           "if": { "properties": { "protocol": { "const": "udp" } }, "required": ["protocol"] },

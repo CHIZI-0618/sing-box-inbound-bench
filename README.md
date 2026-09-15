@@ -6,6 +6,8 @@
 
 - 版本化配置、manifest 和逐 repetition 结果格式；
 - 原生 TCP echo、真正单向连续流的 bulk upload/download、短连接 client/server；
+- TCP `idle` 会在连接仍保持打开时同步采样 worker 与 sing-box，用于
+  1/250/500/750/1000 连接的内存、FD 与 socket 曲线；
 - 原生 UDP echo 与按全局速率调度的开放环固定 offered-load PPS client/server；
 - `raw`、`direct`、`redirect`、`tproxy`、`tun`、`tun-auto-redirect`、
   `ebpf-tc`、`ebpf-cgroup` 全部八个 subject；
@@ -37,7 +39,7 @@ eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力
 性能执行链已经验证完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
 `/ebpf/` 诊断，所有 subject 必须使用同一份二进制以保持公平。
 
-尚未实现自动修改 USB gadget、直接能耗和 BPF map 内存。当前输出只适合验证工具和
+尚未实现自动修改 USB gadget 和直接能耗。当前输出只适合验证工具和
 收集原始样本，不适合发布性能排名。
 
 本机最小闭环示例：
@@ -289,6 +291,12 @@ eBPF cgroup 测试使用 run-scoped 专用子 cgroup，只将 benchmark worker �
 短连接由服务端主动关闭，避免 DUT 的临时端口和 TIME_WAIT 成为主要限制。每个响应必须
 包含请求 token，防止将错误连接或陈旧数据计为成功。
 
+空闲连接使用 `mode: "idle"` 和 `duration_ms`。建立阶段不计入驻留时间；连接建立完毕后
+保持到 duration 结束，worker 在通知 controller 采样后才关闭 socket，因此结果中的
+RSS/PSS/USS、FD、socket 和 BPF map 状态确实对应连接仍存活的时刻。0 连接基线使用同一
+subject 的单独无负载启动快照，不应伪装成一个 connections=0 workload；仓库中的
+`configs/raw-tcp-idle.json` 给出 250 连接示例。
+
 ### 6.2 UDP
 
 | 名称 | 参数 | 输出 |
@@ -352,6 +360,13 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 只看 sing-box PID CPU 会漏掉 eBPF、netfilter、路由、softirq 等内核成本。只看 PSS 会
 漏掉 BPF map、conntrack 和 TUN 内核队列。用户态和内核态指标必须并列，不能强行合成
 一个看似精确的数字。
+
+工具会从 sing-box 的 `/proc/PID/fd` 与 `fdinfo` 去重枚举其持有的 BPF map，记录 map ID、
+类型、key/value size、容量、flags 以及内核在该平台实际公开的 `memlock`。`memlock=0`
+表示内核未公开这个字段，不能解释为 map 没有内存成本；工具不会用
+`(key_size+value_size)*max_entries` 冒充包含 preallocation、per-CPU 和内核元数据的真实
+占用。map 当前 entry 数和程序 run_time 仍应从 eBPF runtime diagnostics/单独 profiling
+轮次解释，不能为了正式计时高频扫描 fdinfo 或开启全局 BPF stats。
 
 ## 8. 执行协议
 

@@ -533,6 +533,8 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 			SubjectMinorFaults: subjectDelta.MinorFaults, SubjectMajorFaults: subjectDelta.MajorFaults,
 			SubjectVoluntarySwitches: subjectDelta.VoluntarySwitches, SubjectInvoluntarySwitches: subjectDelta.InvoluntarySwitches,
 			SubjectThreads: subjectDelta.Threads, SubjectFileDescriptors: subjectDelta.FileDescriptors, SubjectSocketDescriptors: subjectDelta.SocketFileDescriptors,
+			SubjectBPFProgramDescriptors: subjectDelta.BPFProgramDescriptors, SubjectBPFLinkDescriptors: subjectDelta.BPFLinkDescriptors,
+			SubjectBPFMapMemlockBytes: subjectDelta.BPFMapMemlockBytes, SubjectBPFMaps: convertBPFMaps(subjectDelta.BPFMaps),
 			SystemCPUTicks: hostDelta.System.CPUTicks, SystemCPUByCore: hostDelta.System.CPUByCore,
 			SystemSoftIRQs: hostDelta.System.SoftIRQs, SystemContextSwitches: hostDelta.System.ContextSwitches,
 			SystemProcessesCreated: hostDelta.System.Processes, SystemPageFaults: hostDelta.System.PageFaults,
@@ -554,6 +556,20 @@ func measuredInterfaces(config protocol.Config) []string {
 		interfaces = append(interfaces, config.Subject.TunName)
 	}
 	return interfaces
+}
+
+func convertBPFMaps(source []metrics.BPFMapSnapshot) []protocol.BPFMapCounters {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make([]protocol.BPFMapCounters, len(source))
+	for index, item := range source {
+		result[index] = protocol.BPFMapCounters{
+			ID: item.ID, Type: item.Type, KeySize: item.KeySize, ValueSize: item.ValueSize,
+			MaxEntries: item.MaxEntries, Flags: item.Flags, Memlock: item.Memlock,
+		}
+	}
+	return result
 }
 
 func convertInterfaces(source map[string]netdev.Stats) map[string]protocol.InterfaceCounters {

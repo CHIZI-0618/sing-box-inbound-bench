@@ -255,6 +255,67 @@ func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadRes
 	}, counters.err()
 }
 
+// RunIdle establishes the requested number of TCP connections concurrently,
+// holds them for the measurement duration, and returns them still open. The
+// worker closes them only after the controller samples both processes, so RSS,
+// FD and socket counts describe the resident state rather than post-cleanup.
+func RunIdle(ctx context.Context, config ClientConfig) (protocol.WorkloadResult, []net.Conn, error) {
+	startedAt := time.Now()
+	if config.Connections < 1 || config.Duration <= 0 {
+		return protocol.WorkloadResult{}, nil, errors.New("idle mode requires positive connections and duration")
+	}
+	connections := make([]net.Conn, config.Connections)
+	errorsByConnection := make([]error, config.Connections)
+	var workers sync.WaitGroup
+	start := make(chan struct{})
+	for index := range connections {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			connections[index], errorsByConnection[index] = (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "tcp", config.Target)
+		}(index)
+	}
+	close(start)
+	workers.Wait()
+	for _, err := range errorsByConnection {
+		if err != nil {
+			closeConnections(connections)
+			return protocol.WorkloadResult{}, nil, err
+		}
+	}
+	setupFinishedAt := time.Now()
+	timer := time.NewTimer(config.Duration)
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		closeConnections(connections)
+		return protocol.WorkloadResult{}, nil, ctx.Err()
+	}
+	finishedAt := time.Now()
+	return protocol.WorkloadResult{
+		Counters: protocol.Counters{Operations: uint64(len(connections))},
+		Timing: protocol.WorkloadTiming{
+			StartedAt: startedAt, SetupDurationNS: setupFinishedAt.Sub(startedAt).Nanoseconds(),
+			ActiveDurationNS: finishedAt.Sub(setupFinishedAt).Nanoseconds(), FinishedAt: finishedAt,
+		},
+	}, connections, nil
+}
+
+func closeConnections(connections []net.Conn) {
+	for _, connection := range connections {
+		if connection != nil {
+			_ = connection.Close()
+		}
+	}
+}
+
 type atomicCounters struct {
 	operations    atomic.Uint64
 	failed        atomic.Uint64

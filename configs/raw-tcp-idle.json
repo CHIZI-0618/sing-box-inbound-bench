@@ -1,0 +1,18 @@
+{
+  "protocol_version": "inbound-bench/v2",
+  "run_id": "example-raw-tcp-idle",
+  "subject": { "kind": "raw" },
+  "workload": {
+    "protocol": "tcp",
+    "mode": "idle",
+    "target": "127.0.0.1:19090",
+    "payload_bytes": 1,
+    "duration_ms": 1000,
+    "connections": 250
+  },
+  "execution": {
+    "warmup_repetitions": 0,
+    "repetitions": 1,
+    "output_directory": "results"
+  }
+}

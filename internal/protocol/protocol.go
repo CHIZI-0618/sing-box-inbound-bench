@@ -47,6 +47,7 @@ const (
 	ModeBulkUpload   WorkloadMode = "bulk-upload"
 	ModeBulkDownload WorkloadMode = "bulk-download"
 	ModeShort        WorkloadMode = "short"
+	ModeIdle         WorkloadMode = "idle"
 	ModePPS          WorkloadMode = "pps"
 )
 
@@ -193,56 +194,70 @@ type WorkloadResult struct {
 }
 
 type ResourceDelta struct {
-	WallNanoseconds            int64                        `json:"wall_nanoseconds"`
-	ClientUserTicks            uint64                       `json:"client_user_ticks,omitempty"`
-	ClientSystemTicks          uint64                       `json:"client_system_ticks,omitempty"`
-	ClientRunNanoseconds       uint64                       `json:"client_run_nanoseconds,omitempty"`
-	ClientReadBytes            uint64                       `json:"client_read_bytes,omitempty"`
-	ClientWriteBytes           uint64                       `json:"client_write_bytes,omitempty"`
-	ClientRSSBytes             uint64                       `json:"client_rss_bytes,omitempty"`
-	ClientPSSBytes             uint64                       `json:"client_pss_bytes,omitempty"`
-	ClientUSSBytes             uint64                       `json:"client_uss_bytes,omitempty"`
-	ClientHighWaterRSSBytes    uint64                       `json:"client_high_water_rss_bytes,omitempty"`
-	ClientSwapBytes            uint64                       `json:"client_swap_bytes,omitempty"`
-	ClientMinorFaults          uint64                       `json:"client_minor_faults,omitempty"`
-	ClientMajorFaults          uint64                       `json:"client_major_faults,omitempty"`
-	ClientVoluntarySwitches    uint64                       `json:"client_voluntary_switches,omitempty"`
-	ClientInvoluntarySwitches  uint64                       `json:"client_involuntary_switches,omitempty"`
-	ClientThreads              uint64                       `json:"client_threads,omitempty"`
-	ClientFileDescriptors      uint64                       `json:"client_file_descriptors,omitempty"`
-	ClientSocketDescriptors    uint64                       `json:"client_socket_descriptors,omitempty"`
-	SubjectUserTicks           uint64                       `json:"subject_user_ticks,omitempty"`
-	SubjectSystemTicks         uint64                       `json:"subject_system_ticks,omitempty"`
-	SubjectRunNanoseconds      uint64                       `json:"subject_run_nanoseconds,omitempty"`
-	SubjectReadBytes           uint64                       `json:"subject_read_bytes,omitempty"`
-	SubjectWriteBytes          uint64                       `json:"subject_write_bytes,omitempty"`
-	SubjectRSSBytes            uint64                       `json:"subject_rss_bytes,omitempty"`
-	SubjectPSSBytes            uint64                       `json:"subject_pss_bytes,omitempty"`
-	SubjectUSSBytes            uint64                       `json:"subject_uss_bytes,omitempty"`
-	SubjectHighWaterRSSBytes   uint64                       `json:"subject_high_water_rss_bytes,omitempty"`
-	SubjectSwapBytes           uint64                       `json:"subject_swap_bytes,omitempty"`
-	SubjectMinorFaults         uint64                       `json:"subject_minor_faults,omitempty"`
-	SubjectMajorFaults         uint64                       `json:"subject_major_faults,omitempty"`
-	SubjectVoluntarySwitches   uint64                       `json:"subject_voluntary_switches,omitempty"`
-	SubjectInvoluntarySwitches uint64                       `json:"subject_involuntary_switches,omitempty"`
-	SubjectThreads             uint64                       `json:"subject_threads,omitempty"`
-	SubjectFileDescriptors     uint64                       `json:"subject_file_descriptors,omitempty"`
-	SubjectSocketDescriptors   uint64                       `json:"subject_socket_descriptors,omitempty"`
-	SystemCPUTicks             []uint64                     `json:"system_cpu_ticks,omitempty"`
-	SystemCPUByCore            map[string][]uint64          `json:"system_cpu_by_core,omitempty"`
-	SystemSoftIRQs             map[string]uint64            `json:"system_softirqs,omitempty"`
-	SystemContextSwitches      uint64                       `json:"system_context_switches,omitempty"`
-	SystemProcessesCreated     uint64                       `json:"system_processes_created,omitempty"`
-	SystemPageFaults           uint64                       `json:"system_page_faults,omitempty"`
-	SystemMajorPageFaults      uint64                       `json:"system_major_page_faults,omitempty"`
-	SystemMigrations           uint64                       `json:"system_migrations,omitempty"`
-	Interfaces                 map[string]InterfaceCounters `json:"interfaces,omitempty"`
-	ThermalBefore              map[string]int64             `json:"thermal_before_millicelsius,omitempty"`
-	ThermalAfter               map[string]int64             `json:"thermal_after_millicelsius,omitempty"`
-	CPUFrequencyBefore         map[string]int64             `json:"cpu_frequency_before_khz,omitempty"`
-	CPUFrequencyAfter          map[string]int64             `json:"cpu_frequency_after_khz,omitempty"`
-	ConntrackCountBefore       *uint64                      `json:"conntrack_count_before,omitempty"`
-	ConntrackCountAfter        *uint64                      `json:"conntrack_count_after,omitempty"`
+	WallNanoseconds              int64                        `json:"wall_nanoseconds"`
+	ClientUserTicks              uint64                       `json:"client_user_ticks,omitempty"`
+	ClientSystemTicks            uint64                       `json:"client_system_ticks,omitempty"`
+	ClientRunNanoseconds         uint64                       `json:"client_run_nanoseconds,omitempty"`
+	ClientReadBytes              uint64                       `json:"client_read_bytes,omitempty"`
+	ClientWriteBytes             uint64                       `json:"client_write_bytes,omitempty"`
+	ClientRSSBytes               uint64                       `json:"client_rss_bytes,omitempty"`
+	ClientPSSBytes               uint64                       `json:"client_pss_bytes,omitempty"`
+	ClientUSSBytes               uint64                       `json:"client_uss_bytes,omitempty"`
+	ClientHighWaterRSSBytes      uint64                       `json:"client_high_water_rss_bytes,omitempty"`
+	ClientSwapBytes              uint64                       `json:"client_swap_bytes,omitempty"`
+	ClientMinorFaults            uint64                       `json:"client_minor_faults,omitempty"`
+	ClientMajorFaults            uint64                       `json:"client_major_faults,omitempty"`
+	ClientVoluntarySwitches      uint64                       `json:"client_voluntary_switches,omitempty"`
+	ClientInvoluntarySwitches    uint64                       `json:"client_involuntary_switches,omitempty"`
+	ClientThreads                uint64                       `json:"client_threads,omitempty"`
+	ClientFileDescriptors        uint64                       `json:"client_file_descriptors,omitempty"`
+	ClientSocketDescriptors      uint64                       `json:"client_socket_descriptors,omitempty"`
+	SubjectUserTicks             uint64                       `json:"subject_user_ticks,omitempty"`
+	SubjectSystemTicks           uint64                       `json:"subject_system_ticks,omitempty"`
+	SubjectRunNanoseconds        uint64                       `json:"subject_run_nanoseconds,omitempty"`
+	SubjectReadBytes             uint64                       `json:"subject_read_bytes,omitempty"`
+	SubjectWriteBytes            uint64                       `json:"subject_write_bytes,omitempty"`
+	SubjectRSSBytes              uint64                       `json:"subject_rss_bytes,omitempty"`
+	SubjectPSSBytes              uint64                       `json:"subject_pss_bytes,omitempty"`
+	SubjectUSSBytes              uint64                       `json:"subject_uss_bytes,omitempty"`
+	SubjectHighWaterRSSBytes     uint64                       `json:"subject_high_water_rss_bytes,omitempty"`
+	SubjectSwapBytes             uint64                       `json:"subject_swap_bytes,omitempty"`
+	SubjectMinorFaults           uint64                       `json:"subject_minor_faults,omitempty"`
+	SubjectMajorFaults           uint64                       `json:"subject_major_faults,omitempty"`
+	SubjectVoluntarySwitches     uint64                       `json:"subject_voluntary_switches,omitempty"`
+	SubjectInvoluntarySwitches   uint64                       `json:"subject_involuntary_switches,omitempty"`
+	SubjectThreads               uint64                       `json:"subject_threads,omitempty"`
+	SubjectFileDescriptors       uint64                       `json:"subject_file_descriptors,omitempty"`
+	SubjectSocketDescriptors     uint64                       `json:"subject_socket_descriptors,omitempty"`
+	SubjectBPFProgramDescriptors uint64                       `json:"subject_bpf_program_descriptors,omitempty"`
+	SubjectBPFLinkDescriptors    uint64                       `json:"subject_bpf_link_descriptors,omitempty"`
+	SubjectBPFMapMemlockBytes    uint64                       `json:"subject_bpf_map_memlock_bytes,omitempty"`
+	SubjectBPFMaps               []BPFMapCounters             `json:"subject_bpf_maps,omitempty"`
+	SystemCPUTicks               []uint64                     `json:"system_cpu_ticks,omitempty"`
+	SystemCPUByCore              map[string][]uint64          `json:"system_cpu_by_core,omitempty"`
+	SystemSoftIRQs               map[string]uint64            `json:"system_softirqs,omitempty"`
+	SystemContextSwitches        uint64                       `json:"system_context_switches,omitempty"`
+	SystemProcessesCreated       uint64                       `json:"system_processes_created,omitempty"`
+	SystemPageFaults             uint64                       `json:"system_page_faults,omitempty"`
+	SystemMajorPageFaults        uint64                       `json:"system_major_page_faults,omitempty"`
+	SystemMigrations             uint64                       `json:"system_migrations,omitempty"`
+	Interfaces                   map[string]InterfaceCounters `json:"interfaces,omitempty"`
+	ThermalBefore                map[string]int64             `json:"thermal_before_millicelsius,omitempty"`
+	ThermalAfter                 map[string]int64             `json:"thermal_after_millicelsius,omitempty"`
+	CPUFrequencyBefore           map[string]int64             `json:"cpu_frequency_before_khz,omitempty"`
+	CPUFrequencyAfter            map[string]int64             `json:"cpu_frequency_after_khz,omitempty"`
+	ConntrackCountBefore         *uint64                      `json:"conntrack_count_before,omitempty"`
+	ConntrackCountAfter          *uint64                      `json:"conntrack_count_after,omitempty"`
+}
+
+type BPFMapCounters struct {
+	ID         uint64 `json:"id"`
+	Type       uint64 `json:"type"`
+	KeySize    uint64 `json:"key_size"`
+	ValueSize  uint64 `json:"value_size"`
+	MaxEntries uint64 `json:"max_entries"`
+	Flags      uint64 `json:"flags"`
+	Memlock    uint64 `json:"memlock_bytes"`
 }
 
 type InterfaceCounters struct {
@@ -296,9 +311,6 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Execution.Repetitions == 0 {
 		c.Execution.Repetitions = 5
-	}
-	if c.Execution.WarmupRepetitions == 0 {
-		c.Execution.WarmupRepetitions = 1
 	}
 	if c.Execution.StartupTimeoutMS == 0 {
 		c.Execution.StartupTimeoutMS = 10_000
@@ -497,7 +509,7 @@ func hostIsLoopback(address string) bool {
 func validateMode(network WorkloadProtocol, mode WorkloadMode) error {
 	switch network {
 	case ProtocolTCP:
-		if mode == ModeEcho || mode == ModeBulkUpload || mode == ModeBulkDownload || mode == ModeShort {
+		if mode == ModeEcho || mode == ModeBulkUpload || mode == ModeBulkDownload || mode == ModeShort || mode == ModeIdle {
 			return nil
 		}
 	case ProtocolUDP:

@@ -14,23 +14,37 @@ import (
 )
 
 type ProcessSnapshot struct {
-	UserTicks             uint64 `json:"user_ticks"`
-	SystemTicks           uint64 `json:"system_ticks"`
-	RunNanoseconds        uint64 `json:"run_nanoseconds"`
-	ReadBytes             uint64 `json:"read_bytes"`
-	WriteBytes            uint64 `json:"write_bytes"`
-	RSSBytes              uint64 `json:"rss_bytes"`
-	PSSBytes              uint64 `json:"pss_bytes"`
-	USSBytes              uint64 `json:"uss_bytes"`
-	HighWaterRSSBytes     uint64 `json:"high_water_rss_bytes"`
-	SwapBytes             uint64 `json:"swap_bytes"`
-	MinorFaults           uint64 `json:"minor_faults"`
-	MajorFaults           uint64 `json:"major_faults"`
-	VoluntarySwitches     uint64 `json:"voluntary_switches"`
-	InvoluntarySwitches   uint64 `json:"involuntary_switches"`
-	Threads               uint64 `json:"threads"`
-	FileDescriptors       uint64 `json:"file_descriptors"`
-	SocketFileDescriptors uint64 `json:"socket_file_descriptors"`
+	UserTicks             uint64           `json:"user_ticks"`
+	SystemTicks           uint64           `json:"system_ticks"`
+	RunNanoseconds        uint64           `json:"run_nanoseconds"`
+	ReadBytes             uint64           `json:"read_bytes"`
+	WriteBytes            uint64           `json:"write_bytes"`
+	RSSBytes              uint64           `json:"rss_bytes"`
+	PSSBytes              uint64           `json:"pss_bytes"`
+	USSBytes              uint64           `json:"uss_bytes"`
+	HighWaterRSSBytes     uint64           `json:"high_water_rss_bytes"`
+	SwapBytes             uint64           `json:"swap_bytes"`
+	MinorFaults           uint64           `json:"minor_faults"`
+	MajorFaults           uint64           `json:"major_faults"`
+	VoluntarySwitches     uint64           `json:"voluntary_switches"`
+	InvoluntarySwitches   uint64           `json:"involuntary_switches"`
+	Threads               uint64           `json:"threads"`
+	FileDescriptors       uint64           `json:"file_descriptors"`
+	SocketFileDescriptors uint64           `json:"socket_file_descriptors"`
+	BPFProgramDescriptors uint64           `json:"bpf_program_descriptors"`
+	BPFLinkDescriptors    uint64           `json:"bpf_link_descriptors"`
+	BPFMapMemlockBytes    uint64           `json:"bpf_map_memlock_bytes"`
+	BPFMaps               []BPFMapSnapshot `json:"bpf_maps,omitempty"`
+}
+
+type BPFMapSnapshot struct {
+	ID         uint64 `json:"id"`
+	Type       uint64 `json:"type"`
+	KeySize    uint64 `json:"key_size"`
+	ValueSize  uint64 `json:"value_size"`
+	MaxEntries uint64 `json:"max_entries"`
+	Flags      uint64 `json:"flags"`
+	Memlock    uint64 `json:"memlock_bytes"`
 }
 
 func ReadProcess(pid int) (ProcessSnapshot, error) {
@@ -130,10 +144,29 @@ func ReadProcess(pid int) (ProcessSnapshot, error) {
 	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
 	if err == nil {
 		result.FileDescriptors = uint64(len(entries))
+		seenMapIDs := make(map[uint64]bool)
 		for _, entry := range entries {
 			target, readErr := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, entry.Name()))
-			if readErr == nil && strings.HasPrefix(target, "socket:[") {
+			if readErr != nil {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(target, "socket:["):
 				result.SocketFileDescriptors++
+			case strings.Contains(target, "bpf-map"):
+				mapInfo, infoErr := readBPFMapInfo(fmt.Sprintf("/proc/%d/fdinfo/%s", pid, entry.Name()))
+				if infoErr == nil {
+					if mapInfo.ID != 0 && seenMapIDs[mapInfo.ID] {
+						continue
+					}
+					seenMapIDs[mapInfo.ID] = true
+					result.BPFMaps = append(result.BPFMaps, mapInfo)
+					result.BPFMapMemlockBytes += mapInfo.Memlock
+				}
+			case strings.Contains(target, "bpf-prog"):
+				result.BPFProgramDescriptors++
+			case strings.Contains(target, "bpf-link"):
+				result.BPFLinkDescriptors++
 			}
 		}
 	} else if !errors.Is(err, os.ErrPermission) {
@@ -153,12 +186,45 @@ func ProcessDelta(before, after ProcessSnapshot) (ProcessSnapshot, error) {
 		VoluntarySwitches: after.VoluntarySwitches - before.VoluntarySwitches, InvoluntarySwitches: after.InvoluntarySwitches - before.InvoluntarySwitches,
 		RSSBytes: after.RSSBytes, PSSBytes: after.PSSBytes, USSBytes: after.USSBytes, HighWaterRSSBytes: after.HighWaterRSSBytes,
 		SwapBytes: after.SwapBytes, Threads: after.Threads, FileDescriptors: after.FileDescriptors, SocketFileDescriptors: after.SocketFileDescriptors,
+		BPFProgramDescriptors: after.BPFProgramDescriptors, BPFLinkDescriptors: after.BPFLinkDescriptors,
+		BPFMapMemlockBytes: after.BPFMapMemlockBytes, BPFMaps: after.BPFMaps,
 	}
 	if result.RunNanoseconds == 0 {
 		ticks := result.UserTicks + result.SystemTicks
 		result.RunNanoseconds = ticks * 1_000_000_000 / clockTicksPerSecond()
 	}
 	return result, nil
+}
+
+func readBPFMapInfo(path string) (BPFMapSnapshot, error) {
+	var result BPFMapSnapshot
+	err := readKeyValues(path, func(key, value string) {
+		base := 10
+		if strings.HasPrefix(value, "0x") {
+			base = 0
+		}
+		parsed, parseErr := strconv.ParseUint(value, base, 64)
+		if parseErr != nil {
+			return
+		}
+		switch key {
+		case "map_id":
+			result.ID = parsed
+		case "map_type":
+			result.Type = parsed
+		case "key_size":
+			result.KeySize = parsed
+		case "value_size":
+			result.ValueSize = parsed
+		case "max_entries":
+			result.MaxEntries = parsed
+		case "map_flags":
+			result.Flags = parsed
+		case "memlock":
+			result.Memlock = parsed
+		}
+	})
+	return result, err
 }
 
 var (

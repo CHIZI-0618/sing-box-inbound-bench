@@ -93,6 +93,22 @@
         "subject_threads": { "type": "integer", "minimum": 0 },
         "subject_file_descriptors": { "type": "integer", "minimum": 0 },
         "subject_socket_descriptors": { "type": "integer", "minimum": 0 },
+        "subject_bpf_program_descriptors": { "type": "integer", "minimum": 0 },
+        "subject_bpf_link_descriptors": { "type": "integer", "minimum": 0 },
+        "subject_bpf_map_memlock_bytes": { "type": "integer", "minimum": 0 },
+        "subject_bpf_maps": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "type", "key_size", "value_size", "max_entries", "flags", "memlock_bytes"],
+            "properties": {
+              "id": { "type": "integer", "minimum": 0 }, "type": { "type": "integer", "minimum": 0 },
+              "key_size": { "type": "integer", "minimum": 0 }, "value_size": { "type": "integer", "minimum": 0 },
+              "max_entries": { "type": "integer", "minimum": 0 }, "flags": { "type": "integer", "minimum": 0 },
+              "memlock_bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
         "system_cpu_ticks": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
         "system_cpu_by_core": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "integer", "minimum": 0 } } },
         "system_softirqs": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },

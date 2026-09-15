@@ -95,3 +95,33 @@ func TestTCPPathEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTCPIdleLeavesConnectionsOpenForSampling(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Server{}).Serve(ctx, listener) }()
+	result, connections, err := RunIdle(context.Background(), ClientConfig{
+		Target: listener.Addr().String(), Mode: protocol.ModeIdle, Connections: 8,
+		Duration: 20 * time.Millisecond, Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Counters.Operations != 8 || len(connections) != 8 || result.Timing.ActiveDurationNS < int64(20*time.Millisecond) {
+		t.Fatalf("result=%+v connections=%d", result, len(connections))
+	}
+	for _, connection := range connections {
+		if err = connection.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closeConnections(connections)
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}

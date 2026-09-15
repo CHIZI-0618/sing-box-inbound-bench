@@ -20,6 +20,14 @@ func TestReadConfigRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestExplicitZeroWarmupIsPreserved(t *testing.T) {
+	config := Config{Execution: ExecutionConfig{WarmupRepetitions: 0}}
+	config.ApplyDefaults()
+	if config.Execution.WarmupRepetitions != 0 {
+		t.Fatalf("warmup=%d", config.Execution.WarmupRepetitions)
+	}
+}
+
 func TestConfigValidationRejectsAmbiguousWorkloads(t *testing.T) {
 	base := Config{
 		ProtocolVersion: Version,
