@@ -44,3 +44,31 @@ func TestWriteArtifactsRejectsTraversal(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+func TestBuildMatrixStateRandomizesByBlockAndWrapsRawControls(t *testing.T) {
+	matrix := protocol.MatrixConfig{
+		ProtocolVersion: protocol.Version, MatrixID: "matrix", Seed: 42,
+		RawControl: &protocol.Config{RunID: "raw-control", Subject: protocol.SubjectConfig{Kind: protocol.SubjectRaw}},
+		Cases: []protocol.Config{
+			{RunID: "a", Subject: protocol.SubjectConfig{Kind: protocol.SubjectRaw}, Execution: protocol.ExecutionConfig{WarmupRepetitions: 1, Repetitions: 2}},
+			{RunID: "b", Subject: protocol.SubjectConfig{Kind: protocol.SubjectDirect}, Execution: protocol.ExecutionConfig{WarmupRepetitions: 1, Repetitions: 2}},
+			{RunID: "c", Subject: protocol.SubjectConfig{Kind: protocol.SubjectTun}, Execution: protocol.ExecutionConfig{WarmupRepetitions: 1, Repetitions: 2}},
+		},
+	}
+	first := buildMatrixState(t.TempDir(), matrix)
+	second := buildMatrixState(t.TempDir(), matrix)
+	if len(first.Jobs) != 15 || len(second.Jobs) != len(first.Jobs) {
+		t.Fatalf("jobs=%d", len(first.Jobs))
+	}
+	for index := range first.Jobs {
+		if first.Jobs[index].ID != second.Jobs[index].ID {
+			t.Fatal("same seed produced a different order")
+		}
+	}
+	for block := 0; block < 3; block++ {
+		offset := block * 5
+		if first.Jobs[offset].Control != "before" || first.Jobs[offset+4].Control != "after" {
+			t.Fatalf("block %d is not wrapped by controls", block)
+		}
+	}
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CHIZI-0618/sing-box-inbound-bench/schema/matrix.schema.json",
+  "title": "sing-box inbound benchmark matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "matrix_id", "seed", "output_directory", "cases"],
+  "properties": {
+    "protocol_version": { "const": "inbound-bench/v2" },
+    "matrix_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "seed": { "type": "integer" },
+    "output_directory": { "type": "string", "minLength": 1 },
+    "resume": { "type": "boolean" },
+    "raw_control": {
+      "allOf": [
+        { "$ref": "config.schema.json" },
+        { "properties": { "subject": { "properties": { "kind": { "const": "raw" } } } } }
+      ]
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "config.schema.json" }
+    }
+  }
+}

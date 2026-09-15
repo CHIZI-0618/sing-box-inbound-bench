@@ -24,6 +24,10 @@
 - TUN 等待真实接口出现，并以接口 RX/TX 增量证明数据路径；auto_redirect 还会证明
   sing-tun 实际选择的 nftables 或 iptables backend 存在；
 - Android ADB 命令计划、dry-run 和仅允许清理 run ID 自有路径的边界测试。
+- `matrix` 按固定 seed 在每个 repetition block 内随机化 subject，支持逐 job 断点续跑，
+  并可在每个 block 前后自动执行 raw control；
+- `summarize` 仅聚合非 warmup 且 valid 的 repetition，输出 `summary.json`、
+  `summary.md` 和超过 5% 的 raw 漂移告警。
 
 eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力探测、运行时 attachment
 证明和生命周期框架；它们已经有无设备 fake-runner 测试，但尚未在本仓库的自动 runner
@@ -48,6 +52,19 @@ go build -o inbound-bench ./cmd/inbound-bench
 token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每个 repetition 都会
 重新启动被测 sing-box，并在正式计时前完成独立的完整性预热与路径证明。任何阶段失败
 都会留下 invalid repetition；Stop、Cleanup 或 VerifyRestore 失败也会反向使本轮无效。
+
+矩阵冒烟示例：
+
+```sh
+./inbound-bench matrix -config configs/matrix-raw-smoke.json
+# 中断后，将配置中的 resume 改为 true；已存在且能完整解码的结果不会重跑。
+./inbound-bench matrix -config configs/matrix-raw-smoke.json
+# 也可只重新生成汇总：
+./inbound-bench summarize -config configs/matrix-raw-smoke.json
+```
+
+恢复执行会比较脱敏后的完整矩阵配置；seed、case、工作负载或 subject 参数发生变化时
+会拒绝混入旧结果。每个 job 完成后以原子 rename 更新 `state.json`。
 
 本项目计划对 sing-box 的本机透明接管方案进行可复现的横向测试，并同时提供不经过
 sing-box 的裸网络基线和经过一次 sing-box 用户态转发的 `direct` 入站基线。
@@ -500,7 +517,7 @@ Preflight -> Snapshot -> Setup -> Start -> ProvePath -> Measure -> Stop -> Colle
 4. 实现 eBPF cgroup 与 TC adapters，以及路径证明。
 5. ~~实现 redirect、TProxy、TUN 与 auto_redirect adapters。~~
 6. 实现 Android ADB runner 和 USB NCM/RNDIS 点对点拓扑。
-7. 实现随机化重复、断点续跑、事务回滚和自动脱敏打包。
+7. ~~实现随机化重复、断点续跑、事务回滚和自动脱敏矩阵。~~
 8. 最后添加 CI；CI 只负责构建、单元测试、namespace 功能测试和 cleanup 验证，不把
    共享云 runner 的性能结果发布为正式排名。
 

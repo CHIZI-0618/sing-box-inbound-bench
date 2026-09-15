@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CHIZI-0618/sing-box-inbound-bench/schema/summary.schema.json",
+  "title": "sing-box inbound benchmark matrix summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "matrix_id", "cases"],
+  "properties": {
+    "protocol_version": { "const": "inbound-bench/v2" },
+    "matrix_id": { "type": "string" },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "subject", "valid_repetitions", "invalid_repetitions", "operations_per_second_median", "delivered_bits_per_second_median", "client_cpu_cores_median", "subject_cpu_cores_median"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "subject": { "enum": ["raw", "direct", "redirect", "tproxy", "tun", "tun-auto-redirect", "ebpf-tc", "ebpf-cgroup"] },
+          "valid_repetitions": { "type": "integer", "minimum": 0 }, "invalid_repetitions": { "type": "integer", "minimum": 0 },
+          "operations_per_second_median": { "type": "number", "minimum": 0 }, "delivered_bits_per_second_median": { "type": "number", "minimum": 0 },
+          "latency_p50_ns": { "type": "integer", "minimum": 0 }, "latency_p99_ns": { "type": "integer", "minimum": 0 },
+          "client_cpu_cores_median": { "type": "number", "minimum": 0 }, "subject_cpu_cores_median": { "type": "number", "minimum": 0 },
+          "subject_cpu_seconds_per_gib_median": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "raw_control_drift": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["block", "before_bits_per_second", "after_bits_per_second", "percent", "valid"],
+        "properties": {
+          "block": { "type": "integer", "minimum": 0 }, "before_bits_per_second": { "type": "number", "minimum": 0 },
+          "after_bits_per_second": { "type": "number", "minimum": 0 }, "percent": { "type": "number", "minimum": 0 }, "valid": { "type": "boolean" }
+        }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  }
+}

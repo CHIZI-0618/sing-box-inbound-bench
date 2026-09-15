@@ -7,18 +7,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/metrics"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/netdev"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/report"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/runner"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject/raw"
@@ -39,7 +43,7 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("usage: inbound-bench <run|tcp-server|udp-server> [options]")
+		return errors.New("usage: inbound-bench <run|matrix|summarize|tcp-server|udp-server> [options]")
 	}
 	switch arguments[0] {
 	case "run":
@@ -52,6 +56,30 @@ func run(arguments []string) error {
 			return errors.New("run requires -config")
 		}
 		return runBenchmark(*configPath)
+	case "matrix":
+		flags := flag.NewFlagSet("matrix", flag.ContinueOnError)
+		configPath := flags.String("config", "", "benchmark matrix JSON configuration")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if *configPath == "" {
+			return errors.New("matrix requires -config")
+		}
+		return runMatrix(*configPath)
+	case "summarize":
+		flags := flag.NewFlagSet("summarize", flag.ContinueOnError)
+		configPath := flags.String("config", "", "benchmark matrix JSON configuration")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if *configPath == "" {
+			return errors.New("summarize requires -config")
+		}
+		matrix, err := protocol.ReadMatrixConfig(*configPath)
+		if err != nil {
+			return err
+		}
+		return summarizeMatrix(matrix)
 	case "tcp-server":
 		flags := flag.NewFlagSet("tcp-server", flag.ContinueOnError)
 		listen := flags.String("listen", "0.0.0.0:19090", "listen address")
@@ -110,19 +138,7 @@ func runBenchmark(configPath string) error {
 		}
 		return err
 	}
-	hostname, _ := os.Hostname()
-	manifest := protocol.Manifest{
-		ProtocolVersion: protocol.Version, RunID: config.RunID, CreatedAt: time.Now(), ToolVersion: buildVersion(),
-		GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Hostname: hostname, Subject: config.Subject.Kind,
-	}
-	if err = protocol.WriteJSON(filepath.Join(resultDirectory, "manifest.json"), manifest); err != nil {
-		return err
-	}
-	redacted := config
-	if redacted.Subject.APIToken != "" {
-		redacted.Subject.APIToken = "<redacted>"
-	}
-	if err = protocol.WriteJSON(filepath.Join(resultDirectory, "config.json"), redacted); err != nil {
+	if err = writeRunMetadata(resultDirectory, config); err != nil {
 		return err
 	}
 	runContext, stopSignals := signal.NotifyContext(context.Background(), benchmarkSignals()...)
@@ -130,41 +146,255 @@ func runBenchmark(configPath string) error {
 	total := config.Execution.WarmupRepetitions + config.Execution.Repetitions
 	for index := 0; index < total; index++ {
 		warmupRepetition := index < config.Execution.WarmupRepetitions
-		selected := makeSubject(config)
-		var repetition protocol.Repetition
-		report, executeErr := runner.Execute(runContext, selected,
-			func(ctx context.Context) (subject.WarmupEvidence, error) { return runWarmup(ctx, config, index) },
-			func(ctx context.Context, proof protocol.PathProof) error {
-				result, measureErr := measure(ctx, config, selected, index, warmupRepetition, proof)
-				repetition = result
-				return measureErr
-			})
-		name := fmt.Sprintf("rep-%03d.json", index-config.Execution.WarmupRepetitions)
-		if warmupRepetition {
-			name = fmt.Sprintf("warmup-%03d.json", index)
-		}
-		if repetition.ProtocolVersion == "" {
-			repetition = failedRepetition(config, index, warmupRepetition, report)
-		}
-		repetition.Execution = report.Trace
-		if repetition.PathProof.ObservedAt.IsZero() {
-			repetition.PathProof = report.PathProof
-		}
-		artifactRecords, artifactErr := writeArtifacts(resultDirectory, config.Subject.Kind, strings.TrimSuffix(name, ".json"), report.Artifacts)
-		repetition.Artifacts = artifactRecords
-		executeErr = errors.Join(executeErr, artifactErr)
-		if executeErr != nil {
-			repetition.Validity.Valid = false
-			repetition.Validity.Reasons = append(repetition.Validity.Reasons, executeErr.Error())
-		}
-		if writeErr := protocol.WriteJSON(filepath.Join(resultDirectory, string(config.Subject.Kind), name), repetition); writeErr != nil {
-			return writeErr
-		}
-		if executeErr != nil {
-			return fmt.Errorf("repetition %d: %w", index, executeErr)
+		name := repetitionName(index, config.Execution.WarmupRepetitions)
+		if _, err = executeRepetition(runContext, config, resultDirectory, index, warmupRepetition, name); err != nil {
+			return fmt.Errorf("repetition %d: %w", index, err)
 		}
 	}
 	return nil
+}
+
+func writeRunMetadata(resultDirectory string, config protocol.Config) error {
+	hostname, _ := os.Hostname()
+	manifest := protocol.Manifest{
+		ProtocolVersion: protocol.Version, RunID: config.RunID, CreatedAt: time.Now(), ToolVersion: buildVersion(),
+		GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Hostname: hostname, Subject: config.Subject.Kind,
+	}
+	if err := protocol.WriteJSON(filepath.Join(resultDirectory, "manifest.json"), manifest); err != nil {
+		return err
+	}
+	redacted := config
+	if redacted.Subject.APIToken != "" {
+		redacted.Subject.APIToken = "<redacted>"
+	}
+	return protocol.WriteJSON(filepath.Join(resultDirectory, "config.json"), redacted)
+}
+
+func executeRepetition(runContext context.Context, config protocol.Config, resultDirectory string, index int, warmupRepetition bool, name string) (protocol.Repetition, error) {
+	selected := makeSubject(config)
+	var repetition protocol.Repetition
+	runReport, executeErr := runner.Execute(runContext, selected,
+		func(ctx context.Context) (subject.WarmupEvidence, error) { return runWarmup(ctx, config, index) },
+		func(ctx context.Context, proof protocol.PathProof) error {
+			result, measureErr := measure(ctx, config, selected, index, warmupRepetition, proof)
+			repetition = result
+			return measureErr
+		})
+	if repetition.ProtocolVersion == "" {
+		repetition = failedRepetition(config, index, warmupRepetition, runReport)
+	}
+	repetition.Execution = runReport.Trace
+	if repetition.PathProof.ObservedAt.IsZero() {
+		repetition.PathProof = runReport.PathProof
+	}
+	artifactRecords, artifactErr := writeArtifacts(resultDirectory, config.Subject.Kind, strings.TrimSuffix(name, ".json"), runReport.Artifacts)
+	repetition.Artifacts = artifactRecords
+	executeErr = errors.Join(executeErr, artifactErr)
+	if executeErr != nil {
+		repetition.Validity.Valid = false
+		repetition.Validity.Reasons = append(repetition.Validity.Reasons, executeErr.Error())
+	}
+	if writeErr := protocol.WriteJSON(filepath.Join(resultDirectory, string(config.Subject.Kind), name), repetition); writeErr != nil {
+		return repetition, errors.Join(executeErr, writeErr)
+	}
+	return repetition, executeErr
+}
+
+func repetitionName(index, warmups int) string {
+	if index < warmups {
+		return fmt.Sprintf("warmup-%03d.json", index)
+	}
+	return fmt.Sprintf("rep-%03d.json", index-warmups)
+}
+
+func runMatrix(configPath string) error {
+	matrix, err := protocol.ReadMatrixConfig(configPath)
+	if err != nil {
+		return err
+	}
+	root := filepath.Join(matrix.OutputDirectory, matrix.MatrixID)
+	if _, statErr := os.Stat(root); statErr == nil && !matrix.Resume {
+		return fmt.Errorf("matrix result directory already exists: %s (set resume=true to continue)", root)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if err = os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	redacted := matrix
+	redactConfig := func(config *protocol.Config) {
+		if config != nil && config.Subject.APIToken != "" {
+			config.Subject.APIToken = "<redacted>"
+		}
+	}
+	for index := range redacted.Cases {
+		redactConfig(&redacted.Cases[index])
+	}
+	redactConfig(redacted.RawControl)
+	redacted.Resume = false
+	matrixPath := filepath.Join(root, "matrix.json")
+	if matrix.Resume {
+		if existing, readErr := os.ReadFile(matrixPath); readErr == nil {
+			var stored protocol.MatrixConfig
+			if decodeErr := json.Unmarshal(existing, &stored); decodeErr != nil {
+				return fmt.Errorf("stored matrix configuration is invalid: %w", decodeErr)
+			}
+			stored.Resume = false
+			storedJSON, _ := json.Marshal(stored)
+			incomingJSON, _ := json.Marshal(redacted)
+			if !slices.Equal(storedJSON, incomingJSON) {
+				return errors.New("resume configuration does not match the stored matrix")
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
+	}
+	if err = protocol.WriteJSON(matrixPath, redacted); err != nil {
+		return err
+	}
+	for _, config := range matrix.Cases {
+		caseRoot := filepath.Join(root, "cases", config.RunID)
+		if err = os.MkdirAll(caseRoot, 0o755); err != nil {
+			return err
+		}
+		if _, statErr := os.Stat(filepath.Join(caseRoot, "manifest.json")); errors.Is(statErr, os.ErrNotExist) {
+			if err = writeRunMetadata(caseRoot, config); err != nil {
+				return err
+			}
+		} else if statErr != nil {
+			return statErr
+		}
+	}
+	state := buildMatrixState(root, matrix)
+	if err = protocol.WriteJSON(filepath.Join(root, "state.json"), state); err != nil {
+		return err
+	}
+	runContext, stopSignals := signal.NotifyContext(context.Background(), benchmarkSignals()...)
+	defer stopSignals()
+	var runErrors []error
+	for index := range state.Jobs {
+		job := &state.Jobs[index]
+		resultPath := filepath.Join(root, filepath.FromSlash(job.Result))
+		if existing, decodeErr := protocol.DecodeRepetition(resultPath); decodeErr == nil {
+			job.Complete = true
+			job.Valid = existing.Validity.Valid
+			continue
+		} else if !errors.Is(decodeErr, os.ErrNotExist) {
+			return fmt.Errorf("resume result %s is unreadable: %w", job.Result, decodeErr)
+		}
+		config, caseIndex, configErr := matrixJobConfig(matrix, *job)
+		if configErr != nil {
+			return configErr
+		}
+		resultDirectory := filepath.Dir(filepath.Dir(resultPath))
+		name := filepath.Base(resultPath)
+		repetition, executeErr := executeRepetition(runContext, config, resultDirectory, caseIndex, job.Warmup, name)
+		job.Complete = true
+		job.Valid = repetition.Validity.Valid
+		if executeErr != nil {
+			job.Error = executeErr.Error()
+			runErrors = append(runErrors, fmt.Errorf("%s: %w", job.ID, executeErr))
+		}
+		if err = protocol.WriteJSON(filepath.Join(root, "state.json"), state); err != nil {
+			return errors.Join(errors.Join(runErrors...), err)
+		}
+		if runContext.Err() != nil {
+			return errors.Join(errors.Join(runErrors...), runContext.Err())
+		}
+	}
+	if err = protocol.WriteJSON(filepath.Join(root, "state.json"), state); err != nil {
+		return errors.Join(errors.Join(runErrors...), err)
+	}
+	if err = summarizeMatrix(matrix); err != nil {
+		runErrors = append(runErrors, err)
+	}
+	return errors.Join(runErrors...)
+}
+
+func buildMatrixState(root string, matrix protocol.MatrixConfig) protocol.MatrixState {
+	state := protocol.MatrixState{ProtocolVersion: protocol.Version, MatrixID: matrix.MatrixID, Seed: matrix.Seed}
+	blocks := 0
+	for _, config := range matrix.Cases {
+		blocks = max(blocks, config.Execution.WarmupRepetitions+config.Execution.Repetitions)
+	}
+	for block := 0; block < blocks; block++ {
+		if matrix.RawControl != nil {
+			state.Jobs = append(state.Jobs, controlJob(root, matrix, block, "before"))
+		}
+		indices := make([]int, 0, len(matrix.Cases))
+		for index, config := range matrix.Cases {
+			if block < config.Execution.WarmupRepetitions+config.Execution.Repetitions {
+				indices = append(indices, index)
+			}
+		}
+		sort.Slice(indices, func(left, right int) bool {
+			return matrixOrder(matrix.Seed, block, matrix.Cases[indices[left]].RunID) < matrixOrder(matrix.Seed, block, matrix.Cases[indices[right]].RunID)
+		})
+		for _, index := range indices {
+			config := matrix.Cases[index]
+			name := repetitionName(block, config.Execution.WarmupRepetitions)
+			relative := filepath.ToSlash(filepath.Join("cases", config.RunID, string(config.Subject.Kind), name))
+			state.Jobs = append(state.Jobs, protocol.MatrixJob{
+				ID: fmt.Sprintf("%s-block-%03d", config.RunID, block), CaseID: config.RunID,
+				Subject: config.Subject.Kind, Block: block, Warmup: block < config.Execution.WarmupRepetitions, Result: relative,
+			})
+		}
+		if matrix.RawControl != nil {
+			state.Jobs = append(state.Jobs, controlJob(root, matrix, block, "after"))
+		}
+	}
+	return state
+}
+
+func controlJob(_ string, matrix protocol.MatrixConfig, block int, position string) protocol.MatrixJob {
+	name := fmt.Sprintf("block-%03d-%s.json", block, position)
+	return protocol.MatrixJob{
+		ID: "raw-control-" + strings.TrimSuffix(name, ".json"), CaseID: matrix.RawControl.RunID,
+		Subject: protocol.SubjectRaw, Block: block, Control: position, Result: filepath.ToSlash(filepath.Join("controls", "raw", name)),
+	}
+}
+
+func matrixOrder(seed int64, block int, caseID string) uint64 {
+	hash := fnv.New64a()
+	_, _ = fmt.Fprintf(hash, "%d/%d/%s", seed, block, caseID)
+	return hash.Sum64()
+}
+
+func matrixJobConfig(matrix protocol.MatrixConfig, job protocol.MatrixJob) (protocol.Config, int, error) {
+	if job.Control != "" {
+		if matrix.RawControl == nil {
+			return protocol.Config{}, 0, errors.New("raw control job has no configuration")
+		}
+		config := *matrix.RawControl
+		return config, job.Block*2 + map[string]int{"before": 0, "after": 1}[job.Control], nil
+	}
+	index := slices.IndexFunc(matrix.Cases, func(config protocol.Config) bool { return config.RunID == job.CaseID })
+	if index < 0 {
+		return protocol.Config{}, 0, fmt.Errorf("matrix case %s is missing", job.CaseID)
+	}
+	return matrix.Cases[index], job.Block, nil
+}
+
+func summarizeMatrix(matrix protocol.MatrixConfig) error {
+	root := filepath.Join(matrix.OutputDirectory, matrix.MatrixID)
+	var state protocol.MatrixState
+	stateFile, err := os.Open(filepath.Join(root, "state.json"))
+	if err != nil {
+		return err
+	}
+	decodeErr := json.NewDecoder(stateFile).Decode(&state)
+	closeErr := stateFile.Close()
+	if decodeErr != nil || closeErr != nil {
+		return errors.Join(decodeErr, closeErr)
+	}
+	summary, buildErr := report.Build(root, matrix, state)
+	if err = protocol.WriteJSON(filepath.Join(root, "summary.json"), summary); err != nil {
+		return errors.Join(buildErr, err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "summary.md"), report.Markdown(summary), 0o644); err != nil {
+		return errors.Join(buildErr, err)
+	}
+	return buildErr
 }
 
 func failedRepetition(config protocol.Config, index int, warmup bool, report runner.Report) protocol.Repetition {

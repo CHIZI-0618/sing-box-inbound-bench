@@ -132,7 +132,13 @@ func TestExampleConfigsValidate(t *testing.T) {
 	}
 	for _, path := range matches {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			if _, err := ReadConfig(path); err != nil {
+			var err error
+			if strings.HasPrefix(filepath.Base(path), "matrix-") {
+				_, err = ReadMatrixConfig(path)
+			} else {
+				_, err = ReadConfig(path)
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 		})

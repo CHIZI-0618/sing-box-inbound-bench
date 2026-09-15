@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CHIZI-0618/sing-box-inbound-bench/schema/matrix-state.schema.json",
+  "title": "sing-box inbound benchmark matrix state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "matrix_id", "seed", "jobs"],
+  "properties": {
+    "protocol_version": { "const": "inbound-bench/v2" },
+    "matrix_id": { "type": "string" },
+    "seed": { "type": "integer" },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "case_id", "subject", "block", "warmup", "result", "complete", "valid"],
+        "properties": {
+          "id": { "type": "string" }, "case_id": { "type": "string" },
+          "subject": { "enum": ["raw", "direct", "redirect", "tproxy", "tun", "tun-auto-redirect", "ebpf-tc", "ebpf-cgroup"] },
+          "block": { "type": "integer", "minimum": 0 }, "warmup": { "type": "boolean" },
+          "control": { "enum": ["before", "after"] }, "result": { "type": "string" },
+          "complete": { "type": "boolean" }, "valid": { "type": "boolean" }, "error": { "type": "string" }
+        }
+      }
+    }
+  }
+}
