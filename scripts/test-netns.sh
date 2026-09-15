@@ -11,6 +11,22 @@ mkdir -p "$(dirname "$test_binary")"
 go test -tags=integration -c -o "$test_binary" ./internal/netfilter
 
 if [ "$(id -u)" -eq 0 ]; then
-  exec unshare --net --mount-proc sh -eu -c 'ip link set lo up; sysctl -q -w net.ipv4.conf.all.rp_filter=0; exec "$1" -test.v -test.run "^TestIntegration"' sh "$test_binary"
+  exec unshare --net --mount-proc sh -eu -c '
+    ip link set lo up
+    ip link add bench-out type dummy
+    ip addr add 192.0.2.1/24 dev bench-out
+    ip link set bench-out up
+    ip route add default dev bench-out
+    sysctl -q -w net.ipv4.conf.all.rp_filter=0
+    exec "$1" -test.v -test.run "^TestIntegration"
+  ' sh "$test_binary"
 fi
-exec sudo unshare --net --mount-proc sh -eu -c 'ip link set lo up; sysctl -q -w net.ipv4.conf.all.rp_filter=0; exec "$1" -test.v -test.run "^TestIntegration"' sh "$test_binary"
+exec sudo unshare --net --mount-proc sh -eu -c '
+  ip link set lo up
+  ip link add bench-out type dummy
+  ip addr add 192.0.2.1/24 dev bench-out
+  ip link set bench-out up
+  ip route add default dev bench-out
+  sysctl -q -w net.ipv4.conf.all.rp_filter=0
+  exec "$1" -test.v -test.run "^TestIntegration"
+' sh "$test_binary"
