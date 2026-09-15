@@ -1,4 +1,5 @@
 /inbound-bench
+/build/
 /results/
 *.test
 *.out
