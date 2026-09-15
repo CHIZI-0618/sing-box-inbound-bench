@@ -11,6 +11,6 @@ mkdir -p "$(dirname "$test_binary")"
 go test -tags=integration -c -o "$test_binary" ./internal/netfilter
 
 if [ "$(id -u)" -eq 0 ]; then
-  exec unshare --net --mount-proc "$test_binary" -test.v -test.run '^TestIntegration'
+  exec unshare --net --mount-proc sh -eu -c 'ip link set lo up; sysctl -q -w net.ipv4.conf.all.rp_filter=0; exec "$1" -test.v -test.run "^TestIntegration"' sh "$test_binary"
 fi
-exec sudo unshare --net --mount-proc "$test_binary" -test.v -test.run '^TestIntegration'
+exec sudo unshare --net --mount-proc sh -eu -c 'ip link set lo up; sysctl -q -w net.ipv4.conf.all.rp_filter=0; exec "$1" -test.v -test.run "^TestIntegration"' sh "$test_binary"
