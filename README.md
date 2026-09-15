@@ -1,6 +1,10 @@
 # sing-box 透明入站横向基准测试方案
 
-> 状态：早期可执行原型。本文档定义测试协议，不包含任何尚未实际完成的性能结论。
+> 状态：完整可执行测试工具；尚待不同 Linux/Android 设备提交真实样本。本文档不包含
+> 任何未经本仓库协议采集的性能结论。
+
+执行入口：[快速开始](docs/quick-start.md)；Android 部署与恢复：
+[Android execution and recovery](docs/android.md)。
 
 当前原型已经实现：
 
@@ -39,8 +43,9 @@ eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力
 性能执行链已经验证完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
 `/ebpf/` 诊断，所有 subject 必须使用同一份二进制以保持公平。
 
-尚未实现自动修改 USB gadget 和直接能耗。当前输出只适合验证工具和
-收集原始样本，不适合发布性能排名。
+工具有意不自动修改 USB gadget，也不在 USB 充电条件下伪造直接能耗结论。通过全部
+有效性门槛的真实 LAN/USB 输出可用于发布分项比较；缺少 raw control、路径证明或恢复
+验证的输出只能作为诊断样本，不能用于排名。
 
 本机最小闭环示例：
 
@@ -68,6 +73,28 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
 
 恢复执行会比较脱敏后的完整矩阵配置；seed、case、工作负载或 subject 参数发生变化时
 会拒绝混入旧结果。每个 job 完成后以原子 rename 更新 `state.json`。
+
+生成完整 LAN/USB 横评矩阵：
+
+```sh
+./inbound-bench generate-matrix \
+  --output matrix-lan.json \
+  --matrix-id pixel8-usb-20260915 \
+  --results /data/local/tmp/sing-box/results \
+  --sing-box /data/local/tmp/sing-box/sing-box \
+  --target 192.168.254.2:19090 \
+  --interface rndis0 \
+  --worker-uid 2000 \
+  --udp-pps 100000
+```
+
+生成器展开 139 个已校验 case：八个 subject 的 TCP RTT、1/8 长流上传下载、1/32/128
+短连接、1/250/500/750/1000 idle 曲线，以及支持 UDP 的七个 subject 的 RTT、1/64-flow
+PPS、MTU payload 和 1000-flow churn；redirect 的 UDP 会按能力表直接不生成，而不是产生
+伪失败。`--udp-pps` 是全 workload offered load，应先用 raw pilot 找到链路可持续范围，
+再分别生成 25%/50%/75% 三套矩阵，不能把某台设备的默认 100 kpps 当成统一负载结论。
+完整默认矩阵为 1 次 warmup 加 5 次正式重复，并在每个 block 前后执行 raw control，耗时
+较长；调试可降低 `--warmups`、`--repetitions` 和 `--duration-ms`，但不可与正式结果混合。
 
 Android 主机侧执行：
 
@@ -554,7 +581,8 @@ Preflight -> Snapshot -> Setup -> Start -> ProvePath -> Measure -> Stop -> Colle
 8. ~~添加 CI。~~ CI 只负责构建、单元测试、namespace 功能测试和 cleanup 验证，不把
    共享云 runner 的性能结果发布为正式排名。
 
-在所有 adapters 和指标口径稳定之前，不发布性能排行榜。
+只有真实设备产物通过本文全部有效性门槛后，才发布对应工作负载的分项结果；仓库本身
+不内置或自动更新性能排行榜。
 
 ## 15. 自动验证边界
 

@@ -14,7 +14,7 @@
     "goos": { "type": "string" },
     "goarch": { "type": "string" },
     "hostname": { "type": "string" },
-    "subject": { "enum": ["raw", "direct", "ebpf-tc", "ebpf-cgroup"] },
+    "subject": { "enum": ["raw", "direct", "redirect", "tproxy", "tun", "tun-auto-redirect", "ebpf-tc", "ebpf-cgroup"] },
     "topology": { "type": "string" },
     "properties": { "type": "object", "additionalProperties": { "type": "string" } }
   }

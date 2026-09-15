@@ -20,8 +20,23 @@
           "valid_repetitions": { "type": "integer", "minimum": 0 }, "invalid_repetitions": { "type": "integer", "minimum": 0 },
           "operations_per_second_median": { "type": "number", "minimum": 0 }, "delivered_bits_per_second_median": { "type": "number", "minimum": 0 },
           "latency_p50_ns": { "type": "integer", "minimum": 0 }, "latency_p99_ns": { "type": "integer", "minimum": 0 },
+          "latency_p95_ns": { "type": "integer", "minimum": 0 }, "latency_p999_ns": { "type": "integer", "minimum": 0 },
           "client_cpu_cores_median": { "type": "number", "minimum": 0 }, "subject_cpu_cores_median": { "type": "number", "minimum": 0 },
-          "subject_cpu_seconds_per_gib_median": { "type": "number", "minimum": 0 }
+          "subject_cpu_seconds_per_gib_median": { "type": "number", "minimum": 0 },
+          "subject_rss_bytes_median": { "type": "number", "minimum": 0 }, "subject_pss_bytes_median": { "type": "number", "minimum": 0 },
+          "subject_uss_bytes_median": { "type": "number", "minimum": 0 }, "subject_bpf_map_memlock_bytes_median": { "type": "number", "minimum": 0 },
+          "relative_raw_percent": { "type": "number", "minimum": 0 }, "relative_direct_percent": { "type": "number", "minimum": 0 },
+          "statistics": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object", "additionalProperties": false,
+              "required": ["samples", "median", "q1", "q3", "mad"],
+              "properties": {
+                "samples": { "type": "integer", "minimum": 0 }, "median": { "type": "number", "minimum": 0 },
+                "q1": { "type": "number", "minimum": 0 }, "q3": { "type": "number", "minimum": 0 }, "mad": { "type": "number", "minimum": 0 }
+              }
+            }
+          }
         }
       }
     },

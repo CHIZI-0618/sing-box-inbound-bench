@@ -34,6 +34,10 @@ func ReadMatrixConfig(path string) (MatrixConfig, error) {
 	if err = ensureEOF(decoder); err != nil {
 		return MatrixConfig{}, err
 	}
+	return matrix, NormalizeAndValidateMatrix(&matrix)
+}
+
+func NormalizeAndValidateMatrix(matrix *MatrixConfig) error {
 	if matrix.ProtocolVersion == "" {
 		matrix.ProtocolVersion = Version
 	}
@@ -58,8 +62,8 @@ func ReadMatrixConfig(path string) (MatrixConfig, error) {
 	seen := make(map[string]bool)
 	for index := range matrix.Cases {
 		matrix.Cases[index].ApplyDefaults()
-		if err = matrix.Cases[index].Validate(); err != nil {
-			errs = append(errs, fmt.Errorf("case %d: %w", index, err))
+		if validationErr := matrix.Cases[index].Validate(); validationErr != nil {
+			errs = append(errs, fmt.Errorf("case %d: %w", index, validationErr))
 		}
 		if seen[matrix.Cases[index].RunID] {
 			errs = append(errs, fmt.Errorf("duplicate case run_id %q", matrix.Cases[index].RunID))
@@ -68,13 +72,13 @@ func ReadMatrixConfig(path string) (MatrixConfig, error) {
 	}
 	if matrix.RawControl != nil {
 		matrix.RawControl.ApplyDefaults()
-		if err = matrix.RawControl.Validate(); err != nil {
-			errs = append(errs, fmt.Errorf("raw_control: %w", err))
+		if validationErr := matrix.RawControl.Validate(); validationErr != nil {
+			errs = append(errs, fmt.Errorf("raw_control: %w", validationErr))
 		} else if matrix.RawControl.Subject.Kind != SubjectRaw {
 			errs = append(errs, errors.New("raw_control subject must be raw"))
 		}
 	}
-	return matrix, errors.Join(errs...)
+	return errors.Join(errs...)
 }
 
 type MatrixJob struct {

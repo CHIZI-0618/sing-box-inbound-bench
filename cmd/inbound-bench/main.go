@@ -8,8 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -28,6 +30,7 @@ import (
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject/raw"
 	benchSingBox "github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject/singbox"
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/suite"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/worker"
 	benchTCP "github.com/CHIZI-0618/sing-box-inbound-bench/internal/workload/tcp"
 	benchUDP "github.com/CHIZI-0618/sing-box-inbound-bench/internal/workload/udp"
@@ -44,7 +47,7 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("usage: inbound-bench <run|matrix|summarize|android-run|tcp-server|udp-server> [options]")
+		return errors.New("usage: inbound-bench <run|matrix|summarize|generate-matrix|android-run|tcp-server|udp-server> [options]")
 	}
 	switch arguments[0] {
 	case "run":
@@ -81,6 +84,37 @@ func run(arguments []string) error {
 			return err
 		}
 		return summarizeMatrix(matrix)
+	case "generate-matrix":
+		flags := flag.NewFlagSet("generate-matrix", flag.ContinueOnError)
+		output := flags.String("output", "matrix.json", "generated matrix path")
+		matrixID := flags.String("matrix-id", "lan-comparison", "matrix identifier")
+		results := flags.String("results", "results", "result directory")
+		singBox := flags.String("sing-box", "", "sing-box binary path on the benchmark device")
+		target := flags.String("target", "", "TCP/UDP benchmark server IP:port")
+		outboundInterface := flags.String("interface", "", "physical benchmark interface")
+		workerUID := flags.Uint("worker-uid", 2000, "dedicated benchmark worker UID")
+		seed := flags.Int64("seed", 20260915, "randomization seed")
+		warmups := flags.Int("warmups", 1, "warmup repetitions per case")
+		repetitions := flags.Int("repetitions", 5, "measured repetitions per case")
+		duration := flags.Int64("duration-ms", 20_000, "bulk and UDP PPS duration")
+		idleDuration := flags.Int64("idle-duration-ms", 10_000, "idle TCP residence duration")
+		udpPPS := flags.Int("udp-pps", 100_000, "total offered UDP packets per second")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if *workerUID > uint(^uint32(0)) {
+			return errors.New("worker UID exceeds uint32")
+		}
+		matrix, err := suite.Generate(suite.Options{
+			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target,
+			OutboundInterface: *outboundInterface, WorkerUID: uint32(*workerUID), Seed: *seed,
+			WarmupRepetitions: *warmups, Repetitions: *repetitions, Duration: *duration,
+			IdleDuration: *idleDuration, UDPPPS: *udpPPS,
+		})
+		if err != nil {
+			return err
+		}
+		return protocol.WriteJSON(*output, matrix)
 	case "android-run":
 		flags := flag.NewFlagSet("android-run", flag.ContinueOnError)
 		configPath := flags.String("config", "", "Android orchestration JSON configuration")
@@ -171,10 +205,35 @@ func runBenchmark(configPath string) error {
 }
 
 func writeRunMetadata(resultDirectory string, config protocol.Config) error {
-	hostname, _ := os.Hostname()
+	properties := map[string]string{
+		"workload_protocol": string(config.Workload.Protocol), "workload_mode": string(config.Workload.Mode),
+		"target": config.Workload.Target,
+	}
+	if config.Subject.OutboundInterface != "" {
+		properties["outbound_interface"] = config.Subject.OutboundInterface
+	}
+	if executable, executableErr := os.Executable(); executableErr == nil {
+		if digest, hashErr := hashFile(executable); hashErr == nil {
+			properties["benchmark_binary_sha256"] = digest
+		}
+	}
+	if config.Subject.Kind != protocol.SubjectRaw {
+		digest, hashErr := hashFile(config.Subject.SingBoxBinary)
+		if hashErr != nil {
+			return fmt.Errorf("hash sing-box binary: %w", hashErr)
+		}
+		properties["sing_box_binary_sha256"] = digest
+		if output, versionErr := exec.Command(config.Subject.SingBoxBinary, "version").CombinedOutput(); versionErr == nil {
+			properties["sing_box_version"] = strings.TrimSpace(string(output))
+		}
+	}
+	if kernel, readErr := os.ReadFile("/proc/sys/kernel/osrelease"); readErr == nil {
+		properties["kernel_release"] = strings.TrimSpace(string(kernel))
+	}
 	manifest := protocol.Manifest{
 		ProtocolVersion: protocol.Version, RunID: config.RunID, CreatedAt: time.Now(), ToolVersion: buildVersion(),
-		GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Hostname: hostname, Subject: config.Subject.Kind,
+		GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Subject: config.Subject.Kind,
+		Topology: "local transparent client to external benchmark server", Properties: properties,
 	}
 	if err := protocol.WriteJSON(filepath.Join(resultDirectory, "manifest.json"), manifest); err != nil {
 		return err
@@ -184,6 +243,19 @@ func writeRunMetadata(resultDirectory string, config protocol.Config) error {
 		redacted.Subject.APIToken = "<redacted>"
 	}
 	return protocol.WriteJSON(filepath.Join(resultDirectory, "config.json"), redacted)
+}
+
+func hashFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err = io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func executeRepetition(runContext context.Context, config protocol.Config, resultDirectory string, index int, warmupRepetition bool, name string) (protocol.Repetition, error) {
