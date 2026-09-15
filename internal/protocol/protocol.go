@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -78,11 +79,12 @@ type WorkloadConfig struct {
 }
 
 type ExecutionConfig struct {
-	WarmupRepetitions  int    `json:"warmup_repetitions"`
-	Repetitions        int    `json:"repetitions"`
-	OutputDirectory    string `json:"output_directory"`
-	TemporaryDirectory string `json:"temporary_directory,omitempty"`
-	StartupTimeoutMS   int64  `json:"startup_timeout_ms,omitempty"`
+	WarmupRepetitions  int     `json:"warmup_repetitions"`
+	Repetitions        int     `json:"repetitions"`
+	OutputDirectory    string  `json:"output_directory"`
+	TemporaryDirectory string  `json:"temporary_directory,omitempty"`
+	StartupTimeoutMS   int64   `json:"startup_timeout_ms,omitempty"`
+	WorkerUID          *uint32 `json:"worker_uid,omitempty"`
 }
 
 type Manifest struct {
@@ -148,6 +150,34 @@ type Counters struct {
 	Corrupt         uint64 `json:"corrupt,omitempty"`
 }
 
+type SocketPathEvidence struct {
+	Network            string `json:"network"`
+	ClientLocal        string `json:"client_local"`
+	ServerObservedPeer string `json:"server_observed_peer"`
+}
+
+type WorkerIdentity struct {
+	PID            int    `json:"pid"`
+	UID            uint32 `json:"uid"`
+	CgroupPath     string `json:"cgroup_path,omitempty"`
+	CgroupVerified bool   `json:"cgroup_verified"`
+}
+
+type WorkloadTiming struct {
+	StartedAt        time.Time `json:"started_at"`
+	SetupDurationNS  int64     `json:"setup_duration_ns"`
+	ActiveDurationNS int64     `json:"active_duration_ns"`
+	DrainDurationNS  int64     `json:"drain_duration_ns"`
+	FinishedAt       time.Time `json:"finished_at"`
+}
+
+type WorkloadResult struct {
+	Counters    Counters             `json:"counters"`
+	LatencyNS   []int64              `json:"latency_ns,omitempty"`
+	SocketPaths []SocketPathEvidence `json:"socket_paths,omitempty"`
+	Timing      WorkloadTiming       `json:"timing"`
+}
+
 type ResourceDelta struct {
 	WallNanoseconds        int64             `json:"wall_nanoseconds"`
 	ClientUserTicks        uint64            `json:"client_user_ticks,omitempty"`
@@ -178,6 +208,8 @@ type Repetition struct {
 	DurationNS      int64            `json:"duration_ns"`
 	Counters        Counters         `json:"counters"`
 	LatencyNS       []int64          `json:"latency_ns,omitempty"`
+	Worker          *WorkerIdentity  `json:"worker,omitempty"`
+	WorkloadTiming  *WorkloadTiming  `json:"workload_timing,omitempty"`
 	Resources       ResourceDelta    `json:"resources"`
 	PathProof       PathProof        `json:"path_proof"`
 	Validity        Validity         `json:"validity"`
@@ -232,8 +264,10 @@ func (c Config) Validate() error {
 	if err := validateMode(c.Workload.Protocol, c.Workload.Mode); err != nil {
 		errs = append(errs, err)
 	}
-	if _, _, err := net.SplitHostPort(c.Workload.Target); err != nil {
+	if host, _, err := net.SplitHostPort(c.Workload.Target); err != nil {
 		errs = append(errs, fmt.Errorf("workload.target: %w", err))
+	} else if net.ParseIP(host) == nil {
+		errs = append(errs, errors.New("workload.target must use an IP literal"))
 	}
 	if c.Workload.PayloadBytes < 1 || c.Workload.PayloadBytes > 1<<20 {
 		errs = append(errs, errors.New("payload_bytes must be between 1 and 1048576"))
@@ -285,8 +319,10 @@ func (c Config) Validate() error {
 		} else if !hostIsLoopback(c.Subject.Listen) {
 			errs = append(errs, errors.New("subject.listen must use a loopback IP for the direct baseline"))
 		}
-		if _, _, err := net.SplitHostPort(c.Subject.Target); err != nil {
+		if host, _, err := net.SplitHostPort(c.Subject.Target); err != nil {
 			errs = append(errs, fmt.Errorf("subject.target: %w", err))
+		} else if net.ParseIP(host) == nil {
+			errs = append(errs, errors.New("subject.target must use an IP literal"))
 		}
 		if c.Workload.Target != c.Subject.Listen {
 			errs = append(errs, errors.New("workload.target must equal subject.listen for the direct baseline"))
@@ -301,6 +337,21 @@ func (c Config) Validate() error {
 	if c.Subject.Kind == SubjectEBPFCgroup {
 		if c.Subject.CgroupPath == "" || !filepath.IsAbs(c.Subject.CgroupPath) {
 			errs = append(errs, errors.New("an absolute subject.cgroup_path is required for ebpf-cgroup isolation"))
+		} else {
+			cgroupRoot := filepath.Clean("/sys/fs/cgroup")
+			cgroupPath := filepath.Clean(c.Subject.CgroupPath)
+			relative, relErr := filepath.Rel(cgroupRoot, cgroupPath)
+			if relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				errs = append(errs, errors.New("subject.cgroup_path must name a dedicated child below /sys/fs/cgroup"))
+			}
+		}
+		if len(c.Subject.IncludeUID) != 1 || c.Execution.WorkerUID == nil || c.Subject.IncludeUID[0] != *c.Execution.WorkerUID {
+			errs = append(errs, errors.New("ebpf-cgroup requires one include_uid equal to execution.worker_uid"))
+		}
+	}
+	if c.Subject.Kind == SubjectEBPFTC {
+		if len(c.Subject.IncludeUID) != 1 || c.Execution.WorkerUID == nil || c.Subject.IncludeUID[0] != *c.Execution.WorkerUID {
+			errs = append(errs, errors.New("ebpf-tc requires one include_uid equal to execution.worker_uid"))
 		}
 	}
 	if c.Subject.Kind == SubjectEBPFTC || c.Subject.Kind == SubjectEBPFCgroup {

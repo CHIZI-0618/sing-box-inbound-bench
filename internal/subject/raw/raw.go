@@ -13,10 +13,13 @@ import (
 
 type Subject struct {
 	ProcessNames []string
+	WorkerUID    *uint32
 	found        []string
 }
 
-func New() *Subject { return &Subject{ProcessNames: []string{"sing-box"}} }
+func New(workerUID *uint32) *Subject {
+	return &Subject{ProcessNames: []string{"sing-box"}, WorkerUID: workerUID}
+}
 
 func (*Subject) Kind() protocol.SubjectKind { return protocol.SubjectRaw }
 func (s *Subject) Preflight(context.Context) error {
@@ -57,9 +60,17 @@ func (s *Subject) ObservePath(context.Context) (subject.Observation, error) {
 	data, _ := json.Marshal(map[string]any{"managed_process": false, "rejected_process_names": s.ProcessNames, "matching_processes": found})
 	return subject.Observation{CapturedAt: time.Now(), Data: data}, nil
 }
-func (*Subject) ProvePath(_ context.Context, before, after subject.Observation, warmup subject.WarmupEvidence) (protocol.PathProof, error) {
+func (s *Subject) ProvePath(_ context.Context, before, after subject.Observation, warmup subject.WarmupEvidence) (protocol.PathProof, error) {
+	proofError := subject.ValidateSocketPathEvidence(warmup.Details, false, s.WorkerUID, "")
 	return protocol.PathProof{
-		Valid: warmup.Valid, Method: "checksum-validated framed exchange with no sing-box process found during preflight", ObservedAt: time.Now(),
-		Before: before.Data, After: after.Data, Evidence: warmup.Details,
+		Valid: warmup.Valid && proofError == nil, Method: "server-confirmed raw socket tuple with no sing-box process found during preflight", ObservedAt: time.Now(),
+		Before: before.Data, After: after.Data, Evidence: warmup.Details, Error: errorString(proofError),
 	}, nil
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

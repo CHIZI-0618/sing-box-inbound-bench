@@ -30,6 +30,29 @@
       }
     },
     "latency_ns": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "uid", "cgroup_verified"],
+      "properties": {
+        "pid": { "type": "integer", "minimum": 1 },
+        "uid": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "cgroup_path": { "type": "string" },
+        "cgroup_verified": { "type": "boolean" }
+      }
+    },
+    "workload_timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "setup_duration_ns", "active_duration_ns", "drain_duration_ns", "finished_at"],
+      "properties": {
+        "started_at": { "type": "string", "format": "date-time" },
+        "setup_duration_ns": { "type": "integer", "minimum": 0 },
+        "active_duration_ns": { "type": "integer", "minimum": 0 },
+        "drain_duration_ns": { "type": "integer", "minimum": 0 },
+        "finished_at": { "type": "string", "format": "date-time" }
+      }
+    },
     "resources": {
       "type": "object",
       "additionalProperties": false,

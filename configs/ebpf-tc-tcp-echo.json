@@ -20,6 +20,7 @@
     "timeout_ms": 2000
   },
   "execution": {
+    "worker_uid": 2000,
     "warmup_repetitions": 1,
     "repetitions": 5,
     "output_directory": "/data/local/tmp/sing-box/inbound-bench-run/results",

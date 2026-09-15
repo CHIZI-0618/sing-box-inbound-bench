@@ -13,12 +13,15 @@
 - 任一步失败后仍执行 Stop、Cleanup、VerifyRestore 的事务生命周期测试；
 - 捕获 SIGINT/SIGTERM 后进入有界清理，并为每个阶段记录起止时间和错误；
 - 在删除临时状态前保存脱敏配置、内核探测、stdout、stderr 及 SHA-256；
+- controller 只负责生命周期和采样，实际负载由握手后启动的独立 worker 进程产生；
+- server 回传其观察到的 peer tuple，用于区分 raw 与经 sing-box 新建 outbound 的路径；
 - Android ADB 命令计划、dry-run 和仅允许清理 run ID 自有路径的边界测试。
 
 eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力探测、运行时 attachment
 证明和生命周期框架；它们已经有无设备 fake-runner 测试，但尚未在本仓库的自动 runner
-中完成 Android UID/cgroup worker 编排。因此，连接真机前不会宣称 eBPF 性能执行链已经
-完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
+中完成 Android 设备部署和系统状态编排。worker 已会在创建任何 workload socket 前加入
+专用 cgroup、切换目标 UID 并向 controller 回报验证结果，但连接真机前不会宣称 eBPF
+性能执行链已经验证完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
 `/ebpf/` 诊断，所有 subject 必须使用同一份二进制以保持公平。
 
 尚未实现 redirect、TProxy、TUN、TUN + auto_redirect、USB gadget 配置、能耗、BPF map
@@ -209,14 +212,23 @@ outbound。不得用稳定版测试一个入站、开发版测试另一个入站
 - MTU 主测试为 1500；USB 若实际 MTU 不同，应统一到链路共同支持的相同值；
 - 不启用 MPTCP、TLS、QUIC 加密等会掩盖入站开销的额外工作。
 
-Android ADB root 环境必须显式把客户端降到目标 UID，例如：
+Android ADB root 环境在配置中用 `execution.worker_uid` 固定负载 UID。eBPF subject 必须
+只配置一个相同的 `include_uid`；worker 先加入专用 cgroup，再切换 UID，最后通知
+controller 开始采样和创建 socket。controller 与 sing-box 必须留在该 cgroup 外。
+
+也可以在手工诊断时显式降权运行独立客户端，例如：
 
 ```sh
 su 2000 -c '/data/local/tmp/inbound-bench client ...'
 ```
 
-eBPF cgroup 测试应使用专用子 cgroup，只将 benchmark client 放入其中，避免为了测试
-在 Android 根 cgroup 与 netd 竞争 attachment。
+eBPF cgroup 测试应使用专用子 cgroup，只将 benchmark worker 放入其中，避免为了测试
+在 Android 根 cgroup 与 netd 竞争 attachment。当前 runner 不创建或删除 cgroup；外部
+设备编排必须预先创建配置路径，并在全部 worker 退出后按其自身事务边界回收。
+
+为保证不同 subject 的进程身份一致，正式矩阵中的 raw、direct、TC 与 cgroup 配置应使用
+相同的 `execution.worker_uid`；省略该字段只适合本机开发冒烟，此时 worker 继承 controller
+的有效 UID。
 
 ## 6. 负载矩阵
 
@@ -330,16 +342,25 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 每个 subject 必须定义独立的接管证据：
 
 - `raw`：sing-box 未运行；
-- `direct`：listener accept/session 计数增加；
+- `direct`：专用 listener 配置存在，且服务端观察到不同于 worker 的 outbound tuple；
 - `redirect`：专用 NAT chain packet/byte counters 增加；
 - `tproxy`：专用 mangle chain、mark 和 policy route counters 增加；
 - `tun`：测试 TUN RX/TX counters 增加；
 - `tun-auto-redirect`：auto_redirect backend counters 与 TUN counters 增加，且无 pre-match
   bypass；
-- `ebpf-tc`：正确接口存在 TCX/TC attachment，intercept/assign/deliver counters 增加；
-- `ebpf-cgroup`：正确 cgroup link 存在，redirect/recovery counters 增加。
+- `ebpf-tc`：正确接口存在 TCX/TC attachment，UID 已验证，且 outbound tuple 发生变化；
+- `ebpf-cgroup`：正确 cgroup link 存在，worker 在创建 socket 前已进入目标 cgroup，且
+  outbound tuple 发生变化。
 
-路径证明在预热阶段完成。正式计时阶段不执行高频诊断读取。
+路径证明在预热阶段完成。TCP/UDP server 会返回其实际观察到的 peer tuple：raw 必须与
+worker 的 local tuple 一致；所有经过 sing-box 的方案必须不同，证明服务端看到的是
+sing-box 新建的 outbound socket，而不是 worker socket。该证明只适用于无 NAT 的正式
+LAN/USB 点对点拓扑，并与各 subject 的 attachment/counter 证据组合使用。正式计时阶段
+不执行高频诊断读取。
+
+UDP PPS 将 socket 建立、发送和尾包接收阶段分别记录为 `setup_duration_ns`、
+`active_duration_ns` 和 `drain_duration_ns`，吞吐和 offered rate 不得使用包含 setup 或
+drain timeout 的总时长计算。
 
 ## 10. 事务式状态管理
 

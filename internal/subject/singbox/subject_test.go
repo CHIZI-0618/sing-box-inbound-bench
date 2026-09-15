@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -91,9 +92,13 @@ func TestManagedEBPFDryRunLifecycle(t *testing.T) {
 	commands := &fakeRunner{}
 	managed := New(config, commands)
 	managed.FindProcesses = func([]string) ([]string, error) { return nil, nil }
+	warmupDetails, _ := json.Marshal(map[string]any{
+		"identity": protocol.WorkerIdentity{PID: 4321, UID: 2000},
+		"workload": protocol.WorkloadResult{SocketPaths: []protocol.SocketPathEvidence{{Network: "tcp", ClientLocal: "192.0.2.1:1000", ServerObservedPeer: "192.0.2.1:2000"}}},
+	})
 	_, err := runner.Execute(context.Background(), managed,
 		func(context.Context) (subject.WarmupEvidence, error) {
-			return subject.WarmupEvidence{Valid: true, Details: []byte(`{"operations":1}`)}, nil
+			return subject.WarmupEvidence{Valid: true, Details: warmupDetails}, nil
 		},
 		func(context.Context, protocol.PathProof) error { return nil })
 	if err != nil {

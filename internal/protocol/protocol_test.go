@@ -56,6 +56,33 @@ func TestDirectTargetMustBeListener(t *testing.T) {
 	}
 }
 
+func TestEBPFWorkerIdentityValidation(t *testing.T) {
+	workerUID := uint32(2000)
+	base := Config{
+		ProtocolVersion: Version,
+		RunID:           "run-1",
+		Subject: SubjectConfig{Kind: SubjectEBPFCgroup, SingBoxBinary: "sing-box", CgroupPath: "/sys/fs/cgroup/inbound-bench",
+			IncludeUID: []uint32{workerUID}, APIListen: "127.0.0.1:9090", APIToken: "secret"},
+		Workload: WorkloadConfig{Protocol: ProtocolTCP, Mode: ModeEcho, Target: "192.0.2.1:9000", PayloadBytes: 64,
+			Requests: 1, Connections: 1, Flows: 1},
+		Execution: ExecutionConfig{Repetitions: 1, OutputDirectory: "results", WorkerUID: &workerUID},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*Config){
+		func(config *Config) { config.Execution.WorkerUID = nil },
+		func(config *Config) { config.Subject.IncludeUID = []uint32{2000, 2001} },
+		func(config *Config) { config.Subject.CgroupPath = "/tmp/not-a-cgroup" },
+	} {
+		config := base
+		mutate(&config)
+		if err := config.Validate(); err == nil {
+			t.Fatalf("invalid eBPF worker isolation accepted: %+v", config)
+		}
+	}
+}
+
 func TestSchemasAreValidJSON(t *testing.T) {
 	matches, err := filepath.Glob(filepath.Join("..", "..", "schema", "*.json"))
 	if err != nil {

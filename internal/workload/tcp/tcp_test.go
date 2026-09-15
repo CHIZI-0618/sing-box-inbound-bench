@@ -74,3 +74,24 @@ func TestTCPDurationBulk(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTCPPathEvidence(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Server{}).Serve(ctx, listener) }()
+	result, err := RunDetailed(context.Background(), ClientConfig{Target: listener.Addr().String(), Mode: protocol.ModeEcho, PayloadBytes: 64, Requests: 1, Connections: 1, Timeout: time.Second, CollectProof: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.SocketPaths) != 1 || result.SocketPaths[0].ClientLocal != result.SocketPaths[0].ServerObservedPeer {
+		t.Fatalf("paths=%+v", result.SocketPaths)
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}

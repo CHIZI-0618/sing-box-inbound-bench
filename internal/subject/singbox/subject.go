@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/cgroup"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject"
 )
@@ -76,6 +77,15 @@ func (m *Managed) Preflight(ctx context.Context) error {
 		return scanErr
 	} else if len(found) > 0 {
 		return fmt.Errorf("another sing-box process is already running: %s", strings.Join(found, ", "))
+	}
+	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
+		inside, membershipErr := cgroup.ContainsPID(m.Config.Subject.CgroupPath, os.Getpid())
+		if membershipErr != nil {
+			return fmt.Errorf("verify controller cgroup isolation: %w", membershipErr)
+		}
+		if inside {
+			return errors.New("controller is already inside the benchmark worker cgroup")
+		}
 	}
 	_, err = GenerateConfig(m.Config)
 	if err != nil {
@@ -156,7 +166,19 @@ func (m *Managed) Start(ctx context.Context) error {
 	if m.Config.Subject.Kind == protocol.SubjectDirect {
 		return m.waitDirectListener(ctx)
 	}
-	return m.waitForSurvival(ctx, 150*time.Millisecond)
+	if err = m.waitForSurvival(ctx, 150*time.Millisecond); err != nil {
+		return err
+	}
+	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
+		inside, membershipErr := cgroup.ContainsPID(m.Config.Subject.CgroupPath, m.process.PID())
+		if membershipErr != nil {
+			return fmt.Errorf("verify sing-box cgroup isolation: %w", membershipErr)
+		}
+		if inside {
+			return errors.New("sing-box inherited the benchmark worker cgroup")
+		}
+	}
+	return nil
 }
 
 func (m *Managed) waitDirectListener(ctx context.Context) error {
@@ -268,14 +290,30 @@ func (m *Managed) ProvePath(_ context.Context, before, after subject.Observation
 		return proof, nil
 	}
 	if m.Config.Subject.Kind == protocol.SubjectDirect {
-		proof.Valid = true
-		proof.Method = "checksum-validated framed exchange through a dedicated direct listener while the managed process remained alive"
+		proofError := subject.ValidateSocketPathEvidence(warmup.Details, true, m.Config.Execution.WorkerUID, "")
+		proof.Valid = proofError == nil
+		proof.Method = "server-confirmed outbound socket tuple distinct from the worker tuple through the dedicated direct listener"
+		if proofError != nil {
+			proof.Error = proofError.Error()
+		}
 		return proof, nil
 	}
 	valid, message, err := validateEBPFDiagnostics(after.Data, m.Config.Subject)
-	proof.Method = "runtime eBPF diagnostics attachment plus isolated-UID end-to-end token"
-	proof.Valid = valid
+	cgroupPath := ""
+	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
+		cgroupPath = m.Config.Subject.CgroupPath
+	}
+	proofError := subject.ValidateSocketPathEvidence(warmup.Details, true, m.Config.Execution.WorkerUID, cgroupPath)
+	proof.Method = "runtime eBPF attachment plus pre-socket worker identity and server-confirmed redirected tuple"
+	proof.Valid = valid && proofError == nil
 	proof.Error = message
+	if proofError != nil {
+		if proof.Error == "" {
+			proof.Error = proofError.Error()
+		} else {
+			proof.Error = errors.Join(errors.New(message), proofError).Error()
+		}
+	}
 	proof.Evidence, _ = json.Marshal(map[string]any{"warmup": json.RawMessage(warmup.Details), "kernel_probe": m.kernelProbe})
 	return proof, err
 }

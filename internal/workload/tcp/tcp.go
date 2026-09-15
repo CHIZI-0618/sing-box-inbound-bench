@@ -25,6 +25,7 @@ const (
 	opDownload   = 3
 	opShort      = 4
 	flagResponse = 1
+	flagProof    = 2
 )
 
 type frameHeader struct {
@@ -92,10 +93,19 @@ func (s Server) serveConnection(connection net.Conn) error {
 				return errors.New("request checksum mismatch")
 			}
 			response := header
-			response.flags = flagResponse
+			response.flags |= flagResponse
 			writeHeader(headerBuffer, response)
 			if _, err = writer.Write(headerBuffer); err != nil {
 				return err
+			}
+			if header.flags&flagProof != 0 {
+				observed, encodeErr := protocol.EncodeEndpoint(connection.RemoteAddr())
+				if encodeErr != nil {
+					return encodeErr
+				}
+				if _, err = writer.Write(observed); err != nil {
+					return err
+				}
 			}
 			if _, err = writer.Write(payload); err != nil {
 				return err
@@ -186,9 +196,16 @@ type ClientConfig struct {
 	Duration     time.Duration
 	Connections  int
 	Timeout      time.Duration
+	CollectProof bool
 }
 
 func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, error) {
+	result, err := RunDetailed(ctx, config)
+	return result.Counters, result.LatencyNS, err
+}
+
+func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadResult, error) {
+	startedAt := time.Now()
 	if config.Connections < 1 {
 		config.Connections = 1
 	}
@@ -197,6 +214,7 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 	}
 	var counters atomicCounters
 	latencyByWorker := make([][]int64, config.Connections)
+	pathsByWorker := make([][]protocol.SocketPathEvidence, config.Connections)
 	var workers sync.WaitGroup
 	start := make(chan struct{})
 	for worker := 0; worker < config.Connections; worker++ {
@@ -207,13 +225,13 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 			var err error
 			switch config.Mode {
 			case protocol.ModeShort:
-				err = runShort(ctx, config, worker, &counters, &latencyByWorker[worker])
+				err = runShort(ctx, config, worker, &counters, &latencyByWorker[worker], &pathsByWorker[worker])
 			case protocol.ModeBulkUpload:
 				err = runUpload(ctx, config, worker, &counters)
 			case protocol.ModeBulkDownload:
 				err = runDownload(ctx, config, worker, &counters)
 			default:
-				err = runEcho(ctx, config, worker, &counters, &latencyByWorker[worker])
+				err = runEcho(ctx, config, worker, &counters, &latencyByWorker[worker], &pathsByWorker[worker])
 			}
 			if err != nil && ctx.Err() == nil {
 				counters.setError(err)
@@ -226,7 +244,15 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 	for _, workerLatency := range latencyByWorker {
 		latencies = append(latencies, workerLatency...)
 	}
-	return counters.snapshot(), latencies, counters.err()
+	var paths []protocol.SocketPathEvidence
+	for _, workerPaths := range pathsByWorker {
+		paths = append(paths, workerPaths...)
+	}
+	finishedAt := time.Now()
+	return protocol.WorkloadResult{
+		Counters: counters.snapshot(), LatencyNS: latencies, SocketPaths: paths,
+		Timing: protocol.WorkloadTiming{StartedAt: startedAt, ActiveDurationNS: finishedAt.Sub(startedAt).Nanoseconds(), FinishedAt: finishedAt},
+	}, counters.err()
 }
 
 type atomicCounters struct {
@@ -249,7 +275,7 @@ func (c *atomicCounters) snapshot() protocol.Counters {
 	return protocol.Counters{Operations: c.operations.Load(), Failed: c.failed.Load(), BytesSent: c.bytesSent.Load(), BytesReceived: c.bytesReceived.Load()}
 }
 
-func runEcho(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64) error {
+func runEcho(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) error {
 	connection, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "tcp", config.Target)
 	if err != nil {
 		return err
@@ -272,6 +298,9 @@ func runEcho(ctx context.Context, config ClientConfig, worker int, counters *ato
 			operation = opShort
 		}
 		header := frameHeader{operation: operation, length: uint32(len(payload)), sequence: sequence, checksum: crc32.ChecksumIEEE(payload)}
+		if config.CollectProof && completed == 0 {
+			header.flags |= flagProof
+		}
 		started := time.Now()
 		if err = connection.SetDeadline(operationDeadline(started, end, config.Timeout)); err != nil {
 			return err
@@ -288,8 +317,27 @@ func runEcho(ctx context.Context, config ClientConfig, worker int, counters *ato
 		if err != nil {
 			return err
 		}
-		if response.flags != flagResponse || response.sequence != sequence || response.operation != operation || response.length != uint32(len(responsePayload)) {
+		expectedFlags := uint16(flagResponse)
+		if header.flags&flagProof != 0 {
+			expectedFlags |= flagProof
+		}
+		if response.flags != expectedFlags || response.sequence != sequence || response.operation != operation || response.length != uint32(len(responsePayload)) {
 			return errors.New("response header mismatch")
+		}
+		if header.flags&flagProof != 0 {
+			observed := make([]byte, protocol.EncodedEndpointSize)
+			if _, err = io.ReadFull(connection, observed); err != nil {
+				return err
+			}
+			serverPeer, decodeErr := protocol.DecodeEndpoint(observed)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			clientLocal, canonicalErr := protocol.CanonicalEndpoint(connection.LocalAddr().String())
+			if canonicalErr != nil {
+				return canonicalErr
+			}
+			*paths = append(*paths, protocol.SocketPathEvidence{Network: "tcp", ClientLocal: clientLocal, ServerObservedPeer: serverPeer})
 		}
 		if _, err = io.ReadFull(connection, responsePayload); err != nil {
 			return err
@@ -304,7 +352,7 @@ func runEcho(ctx context.Context, config ClientConfig, worker int, counters *ato
 	return nil
 }
 
-func runShort(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64) error {
+func runShort(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) error {
 	requests := perWorkerRequests(config.Requests, config.Connections, worker)
 	end := endTime(config.Duration)
 	for completed := 0; requests == 0 || completed < requests; completed++ {
@@ -319,13 +367,15 @@ func runShort(ctx context.Context, config ClientConfig, worker int, counters *at
 		started := time.Now()
 		localCounters := &atomicCounters{}
 		var localLatency []int64
-		if err := runEcho(ctx, one, worker+completed, localCounters, &localLatency); err != nil {
+		var localPaths []protocol.SocketPathEvidence
+		if err := runEcho(ctx, one, worker+completed, localCounters, &localLatency, &localPaths); err != nil {
 			return err
 		}
 		counters.operations.Add(localCounters.operations.Load())
 		counters.bytesSent.Add(localCounters.bytesSent.Load())
 		counters.bytesReceived.Add(localCounters.bytesReceived.Load())
 		*latencies = append(*latencies, time.Since(started).Nanoseconds())
+		*paths = append(*paths, localPaths...)
 	}
 	return nil
 }

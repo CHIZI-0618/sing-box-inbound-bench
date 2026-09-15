@@ -18,7 +18,7 @@
         "listen": { "type": "string" },
         "target": { "type": "string" },
         "outbound_interface": { "type": "string" },
-        "cgroup_path": { "type": "string" },
+        "cgroup_path": { "type": "string", "pattern": "^/sys/fs/cgroup/.+" },
         "include_uid": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0, "maximum": 4294967295 } },
         "api_listen": { "type": "string" },
         "api_token": { "type": "string" },
@@ -56,12 +56,12 @@
         "timeout_ms": { "type": "integer", "minimum": 1 }
       },
       "allOf": [
-		{
-		  "oneOf": [
-			{ "required": ["requests"], "not": { "required": ["duration_ms"] }, "properties": { "requests": { "minimum": 1 } } },
-			{ "required": ["duration_ms"], "not": { "required": ["requests"] }, "properties": { "duration_ms": { "minimum": 1 } } }
-		  ]
-		},
+        {
+          "oneOf": [
+            { "required": ["requests"], "not": { "required": ["duration_ms"] }, "properties": { "requests": { "minimum": 1 } } },
+            { "required": ["duration_ms"], "not": { "required": ["requests"] }, "properties": { "duration_ms": { "minimum": 1 } } }
+          ]
+        },
         {
           "if": { "properties": { "protocol": { "const": "tcp" } }, "required": ["protocol"] },
           "then": { "properties": { "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short"] } } }
@@ -72,12 +72,12 @@
         },
         {
           "if": { "properties": { "mode": { "const": "pps" } }, "required": ["mode"] },
-		  "then": { "required": ["offered_pps"], "properties": { "offered_pps": { "type": "integer", "minimum": 1, "maximum": 1000000000 } } }
-		},
-		{
-		  "if": { "properties": { "mode": { "not": { "const": "pps" } } }, "required": ["mode"] },
-		  "then": { "properties": { "offered_pps": { "const": 0 } } }
-		}
+          "then": { "required": ["offered_pps"], "properties": { "offered_pps": { "type": "integer", "minimum": 1, "maximum": 1000000000 } } }
+        },
+        {
+          "if": { "properties": { "mode": { "not": { "const": "pps" } } }, "required": ["mode"] },
+          "then": { "properties": { "offered_pps": { "const": 0 } } }
+        }
       ]
     },
     "execution": {
@@ -89,8 +89,23 @@
         "repetitions": { "type": "integer", "minimum": 1 },
         "output_directory": { "type": "string", "minLength": 1 },
         "temporary_directory": { "type": "string" },
-        "startup_timeout_ms": { "type": "integer", "minimum": 1 }
+        "startup_timeout_ms": { "type": "integer", "minimum": 1 },
+        "worker_uid": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "properties": { "kind": { "enum": ["ebpf-tc", "ebpf-cgroup"] } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["subject"]
+      },
+      "then": { "properties": { "execution": { "required": ["worker_uid"] } } }
+    }
+  ]
 }

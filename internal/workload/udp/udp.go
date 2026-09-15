@@ -20,6 +20,7 @@ const (
 	packetVersion = 2
 	headerSize    = 40
 	flagResponse  = 1
+	flagProof     = 2
 )
 
 type header struct {
@@ -57,6 +58,22 @@ func (s Server) Serve(ctx context.Context, connection net.PacketConn) error {
 		if !valid || h.flags&flagResponse != 0 {
 			continue
 		}
+		if h.flags&flagProof != 0 {
+			observed, encodeErr := protocol.EncodeEndpoint(address)
+			if encodeErr != nil {
+				return encodeErr
+			}
+			proofResponse := make([]byte, len(packet)+len(observed))
+			copy(proofResponse, packet)
+			copy(proofResponse[len(packet):], observed)
+			proofResponse[5] |= flagResponse
+			binary.BigEndian.PutUint32(proofResponse[32:36], crc32.ChecksumIEEE(proofResponse[headerSize:]))
+			binary.BigEndian.PutUint32(proofResponse[36:40], crc32.ChecksumIEEE(proofResponse[:36]))
+			if _, err = connection.WriteTo(proofResponse, address); err != nil {
+				return err
+			}
+			continue
+		}
 		packet[5] |= flagResponse
 		binary.BigEndian.PutUint32(packet[36:40], crc32.ChecksumIEEE(packet[:36]))
 		if _, err = connection.WriteTo(packet, address); err != nil {
@@ -75,9 +92,19 @@ type ClientConfig struct {
 	OfferedPPS   int
 	Timeout      time.Duration
 	RunHash      uint32
+	CollectProof bool
 }
 
 func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, error) {
+	result, err := RunDetailed(ctx, config)
+	return result.Counters, result.LatencyNS, err
+}
+
+func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadResult, error) {
+	startedAt := time.Now()
+	if config.CollectProof && headerSize+config.PayloadBytes+protocol.EncodedEndpointSize > 65_507 {
+		return protocol.WorkloadResult{}, errors.New("UDP path proof response exceeds the maximum datagram size")
+	}
 	if config.Flows < 1 {
 		config.Flows = 1
 	}
@@ -88,12 +115,13 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 		config.Mode = protocol.ModeEcho
 	}
 	if config.Mode == protocol.ModePPS {
-		return runPPS(ctx, config)
+		return runPPS(ctx, config, startedAt)
 	}
 	ctx, cancel := deadlineContext(ctx, config.Duration)
 	defer cancel()
 	var counters atomicCounters
 	latencyByFlow := make([][]int64, config.Flows)
+	pathsByFlow := make([][]protocol.SocketPathEvidence, config.Flows)
 	var workers sync.WaitGroup
 	start := make(chan struct{})
 	for flow := 0; flow < config.Flows; flow++ {
@@ -101,14 +129,18 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 		go func(flow int) {
 			defer workers.Done()
 			<-start
-			if err := runEchoFlow(ctx, config, flow, &counters, &latencyByFlow[flow]); err != nil && ctx.Err() == nil {
+			if err := runEchoFlow(ctx, config, flow, &counters, &latencyByFlow[flow], &pathsByFlow[flow]); err != nil && ctx.Err() == nil {
 				counters.setError(err)
 			}
 		}(flow)
 	}
 	close(start)
 	workers.Wait()
-	return counters.snapshot(), joinLatencies(latencyByFlow), counters.err()
+	finishedAt := time.Now()
+	return protocol.WorkloadResult{
+		Counters: counters.snapshot(), LatencyNS: joinLatencies(latencyByFlow), SocketPaths: joinPathEvidence(pathsByFlow),
+		Timing: protocol.WorkloadTiming{StartedAt: startedAt, ActiveDurationNS: finishedAt.Sub(startedAt).Nanoseconds(), FinishedAt: finishedAt},
+	}, counters.err()
 }
 
 type atomicCounters struct {
@@ -139,14 +171,18 @@ func (c *atomicCounters) snapshot() protocol.Counters {
 	}
 }
 
-func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *atomicCounters, latencies *[]int64) error {
+func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) error {
 	connection, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "udp", config.Target)
 	if err != nil {
 		return err
 	}
 	defer connection.Close()
 	packet := make([]byte, headerSize+config.PayloadBytes)
-	response := make([]byte, len(packet))
+	responseSize := len(packet)
+	if config.CollectProof {
+		responseSize += protocol.EncodedEndpointSize
+	}
+	response := make([]byte, responseSize)
 	requests := perWorkerRequests(config.Requests, config.Flows, flow)
 	var previous uint64
 	for completed := 0; requests == 0 || completed < requests; completed++ {
@@ -155,7 +191,11 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 		}
 		sequence := uint64(completed + 1)
 		sentAt := time.Now()
-		build(packet, header{run: config.RunHash, flow: uint32(flow), sequence: sequence, sentNS: sentAt.UnixNano()})
+		requestHeader := header{run: config.RunHash, flow: uint32(flow), sequence: sequence, sentNS: sentAt.UnixNano()}
+		if config.CollectProof && completed == 0 {
+			requestHeader.flags |= flagProof
+		}
+		build(packet, requestHeader)
 		if err = connection.SetDeadline(sentAt.Add(config.Timeout)); err != nil {
 			return err
 		}
@@ -173,19 +213,34 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 			return readErr
 		}
 		counters.packetsReceived.Add(1)
-		if length >= headerSize {
-			counters.bytesReceived.Add(uint64(length - headerSize))
-		}
 		got, valid := parse(response[:length])
-		if !valid || got.flags&flagResponse == 0 || got.run != config.RunHash || got.flow != uint32(flow) {
+		expectedLength := len(packet)
+		expectedFlags := uint8(flagResponse)
+		if requestHeader.flags&flagProof != 0 {
+			expectedLength += protocol.EncodedEndpointSize
+			expectedFlags |= flagProof
+		}
+		if !valid || got.flags != expectedFlags || got.run != config.RunHash || got.flow != uint32(flow) || length != expectedLength {
 			counters.corrupt.Add(1)
 			continue
 		}
+		counters.bytesReceived.Add(uint64(config.PayloadBytes))
 		if got.sequence <= previous || got.sequence != sequence {
 			counters.reordered.Add(1)
 			continue
 		}
 		previous = got.sequence
+		if requestHeader.flags&flagProof != 0 {
+			serverPeer, decodeErr := protocol.DecodeEndpoint(response[length-protocol.EncodedEndpointSize : length])
+			if decodeErr != nil {
+				return decodeErr
+			}
+			clientLocal, canonicalErr := protocol.CanonicalEndpoint(connection.LocalAddr().String())
+			if canonicalErr != nil {
+				return canonicalErr
+			}
+			*paths = append(*paths, protocol.SocketPathEvidence{Network: "udp", ClientLocal: clientLocal, ServerObservedPeer: serverPeer})
+		}
 		*latencies = append(*latencies, time.Since(sentAt).Nanoseconds())
 		counters.operations.Add(1)
 	}
@@ -202,20 +257,20 @@ type ppsFlow struct {
 	received   int
 }
 
-func runPPS(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, error) {
+func runPPS(ctx context.Context, config ClientConfig, startedAt time.Time) (protocol.WorkloadResult, error) {
 	totalPackets, err := packetCount(config)
 	if err != nil {
-		return protocol.Counters{}, nil, err
+		return protocol.WorkloadResult{}, err
 	}
 	if totalPackets < config.Flows {
-		return protocol.Counters{}, nil, fmt.Errorf("PPS workload has %d packets for %d flows", totalPackets, config.Flows)
+		return protocol.WorkloadResult{}, fmt.Errorf("PPS workload has %d packets for %d flows", totalPackets, config.Flows)
 	}
 	flows := make([]ppsFlow, config.Flows)
 	for flow := range flows {
 		connection, dialErr := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "udp", config.Target)
 		if dialErr != nil {
 			closePPSFlows(flows)
-			return protocol.Counters{}, nil, dialErr
+			return protocol.WorkloadResult{}, dialErr
 		}
 		expected := perWorkerRequests(totalPackets, config.Flows, flow)
 		flows[flow] = ppsFlow{connection: connection, expected: expected, sentAt: make([]atomic.Int64, expected+1), seen: make([]bool, expected+1), latencies: make([]int64, 0, expected)}
@@ -223,12 +278,16 @@ func runPPS(ctx context.Context, config ClientConfig) (protocol.Counters, []int6
 	defer closePPSFlows(flows)
 	var counters atomicCounters
 	clockBase := time.Now()
-	deadline := clockBase.Add(time.Duration(totalPackets)*time.Second/time.Duration(config.OfferedPPS) + config.Timeout)
+	offeredDuration, err := packetOffset(totalPackets, config.OfferedPPS)
+	if err != nil {
+		return protocol.WorkloadResult{}, err
+	}
+	deadline := clockBase.Add(offeredDuration + config.Timeout)
 	var receivers sync.WaitGroup
 	receiverErrors := make(chan error, len(flows))
 	for flow := range flows {
 		if err = flows[flow].connection.SetReadDeadline(deadline); err != nil {
-			return protocol.Counters{}, nil, err
+			return protocol.WorkloadResult{}, err
 		}
 		receivers.Add(1)
 		go func(flow int) {
@@ -245,11 +304,18 @@ func runPPS(ctx context.Context, config ClientConfig) (protocol.Counters, []int6
 		<-timer.C
 	}
 	for index := 0; index < totalPackets; index++ {
-		target := clockBase.Add(time.Duration(index) * time.Second / time.Duration(config.OfferedPPS))
+		offset, offsetErr := packetOffset(index, config.OfferedPPS)
+		if offsetErr != nil {
+			closePPSFlows(flows)
+			receivers.Wait()
+			return protocol.WorkloadResult{}, offsetErr
+		}
+		target := clockBase.Add(offset)
 		if err = waitUntil(ctx, timer, target); err != nil {
 			closePPSFlows(flows)
 			receivers.Wait()
-			return counters.snapshot(), joinPPSLatencies(flows), err
+			finishedAt := time.Now()
+			return protocol.WorkloadResult{Counters: counters.snapshot(), LatencyNS: joinPPSLatencies(flows), Timing: protocol.WorkloadTiming{StartedAt: startedAt, ActiveDurationNS: finishedAt.Sub(startedAt).Nanoseconds(), FinishedAt: finishedAt}}, err
 		}
 		flow := index % len(flows)
 		sequences[flow]++
@@ -260,12 +326,15 @@ func runPPS(ctx context.Context, config ClientConfig) (protocol.Counters, []int6
 		if _, err = flows[flow].connection.Write(packet); err != nil {
 			closePPSFlows(flows)
 			receivers.Wait()
-			return counters.snapshot(), joinPPSLatencies(flows), err
+			finishedAt := time.Now()
+			return protocol.WorkloadResult{Counters: counters.snapshot(), LatencyNS: joinPPSLatencies(flows), Timing: protocol.WorkloadTiming{StartedAt: startedAt, ActiveDurationNS: finishedAt.Sub(startedAt).Nanoseconds(), FinishedAt: finishedAt}}, err
 		}
 		counters.packetsSent.Add(1)
 		counters.bytesSent.Add(uint64(config.PayloadBytes))
 	}
+	activeFinishedAt := time.Now()
 	receivers.Wait()
+	finishedAt := time.Now()
 	close(receiverErrors)
 	for receiveErr := range receiverErrors {
 		counters.setError(receiveErr)
@@ -273,7 +342,10 @@ func runPPS(ctx context.Context, config ClientConfig) (protocol.Counters, []int6
 	for flow := range flows {
 		counters.lost.Add(uint64(flows[flow].expected - flows[flow].received))
 	}
-	return counters.snapshot(), joinPPSLatencies(flows), counters.err()
+	return protocol.WorkloadResult{
+		Counters: counters.snapshot(), LatencyNS: joinPPSLatencies(flows),
+		Timing: protocol.WorkloadTiming{StartedAt: startedAt, SetupDurationNS: clockBase.Sub(startedAt).Nanoseconds(), ActiveDurationNS: activeFinishedAt.Sub(clockBase).Nanoseconds(), DrainDurationNS: finishedAt.Sub(activeFinishedAt).Nanoseconds(), FinishedAt: finishedAt},
+	}, counters.err()
 }
 
 func receivePPSFlow(config ClientConfig, flow int, clockBase time.Time, state *ppsFlow, counters *atomicCounters) error {
@@ -298,13 +370,15 @@ func receivePPSFlow(config ClientConfig, flow int, clockBase time.Time, state *p
 			counters.corrupt.Add(1)
 			continue
 		}
-		if got.sequence <= state.previous {
-			counters.reordered.Add(1)
-		}
-		state.previous = got.sequence
 		if state.seen[got.sequence] {
 			counters.reordered.Add(1)
 			continue
+		}
+		if state.previous != 0 && got.sequence < state.previous {
+			counters.reordered.Add(1)
+		}
+		if got.sequence > state.previous {
+			state.previous = got.sequence
 		}
 		state.seen[got.sequence] = true
 		startedOffset := state.sentAt[got.sequence].Load()
@@ -336,6 +410,17 @@ func packetCount(config ClientConfig) (int, error) {
 		return 0, errors.New("PPS duration is too short for the offered rate")
 	}
 	return total, nil
+}
+
+func packetOffset(index, rate int) (time.Duration, error) {
+	if index < 0 || rate < 1 {
+		return 0, errors.New("invalid packet schedule")
+	}
+	seconds := index / rate
+	if int64(seconds) > math.MaxInt64/int64(time.Second) {
+		return 0, errors.New("PPS schedule exceeds time.Duration")
+	}
+	return time.Duration(seconds)*time.Second + time.Duration(index%rate)*time.Second/time.Duration(rate), nil
 }
 
 func waitUntil(ctx context.Context, timer *time.Timer, target time.Time) error {
@@ -376,6 +461,14 @@ func joinPPSLatencies(flows []ppsFlow) []int64 {
 
 func joinLatencies(flows [][]int64) []int64 {
 	result := make([]int64, 0)
+	for _, values := range flows {
+		result = append(result, values...)
+	}
+	return result
+}
+
+func joinPathEvidence(flows [][]protocol.SocketPathEvidence) []protocol.SocketPathEvidence {
+	var result []protocol.SocketPathEvidence
 	for _, values := range flows {
 		result = append(result, values...)
 	}

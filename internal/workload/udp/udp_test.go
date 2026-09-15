@@ -87,10 +87,38 @@ func TestPacketCount(t *testing.T) {
 	}
 }
 
+func TestPacketOffsetAvoidsIntermediateOverflow(t *testing.T) {
+	offset, err := packetOffset(10_000_000_000, 1_000_000_000)
+	if err != nil || offset != 10*time.Second {
+		t.Fatalf("packetOffset()=(%v, %v)", offset, err)
+	}
+}
+
 func TestPPSDistribution(t *testing.T) {
 	for flow, want := range []int{3, 2, 2, 2, 2} {
 		if got := perWorkerRequests(11, 5, flow); got != want {
 			t.Fatalf("flow %d received %d packets, want %d", flow, got, want)
 		}
+	}
+}
+
+func TestUDPPathEvidence(t *testing.T) {
+	connection, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Server{}).Serve(ctx, connection) }()
+	result, err := RunDetailed(context.Background(), ClientConfig{Target: connection.LocalAddr().String(), Mode: "echo", PayloadBytes: 64, Requests: 1, Flows: 1, Timeout: time.Second, RunHash: 42, CollectProof: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.SocketPaths) != 1 || result.SocketPaths[0].ClientLocal != result.SocketPaths[0].ServerObservedPeer {
+		t.Fatalf("paths=%+v", result.SocketPaths)
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
 	}
 }

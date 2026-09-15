@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"hash/fnv"
 	"net"
 	"os"
 	"os/signal"
@@ -23,6 +22,7 @@ import (
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject"
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject/raw"
 	benchSingBox "github.com/CHIZI-0618/sing-box-inbound-bench/internal/subject/singbox"
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/worker"
 	benchTCP "github.com/CHIZI-0618/sing-box-inbound-bench/internal/workload/tcp"
 	benchUDP "github.com/CHIZI-0618/sing-box-inbound-bench/internal/workload/udp"
 )
@@ -75,6 +75,20 @@ func run(arguments []string) error {
 		}
 		fmt.Fprintln(os.Stdout, connection.LocalAddr())
 		return (benchUDP.Server{}).Serve(signalContext(), connection)
+	case "worker":
+		flags := flag.NewFlagSet("worker", flag.ContinueOnError)
+		requestPath := flags.String("request", "", "internal worker request")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if *requestPath == "" {
+			return errors.New("worker requires -request")
+		}
+		request, err := worker.ReadRequest(*requestPath)
+		if err != nil {
+			return err
+		}
+		return worker.Serve(signalContext(), request, os.Stdin, os.Stdout)
 	default:
 		return fmt.Errorf("unknown command %q", arguments[0])
 	}
@@ -197,7 +211,7 @@ func writeArtifacts(resultDirectory string, kind protocol.SubjectKind, repetitio
 
 func makeSubject(config protocol.Config) subject.Subject {
 	if config.Subject.Kind == protocol.SubjectRaw {
-		return raw.New()
+		return raw.New(config.Execution.WorkerUID)
 	}
 	return benchSingBox.New(config, nil)
 }
@@ -205,51 +219,61 @@ func makeSubject(config protocol.Config) subject.Subject {
 type processProvider interface{ ProcessID() int }
 
 func measure(ctx context.Context, config protocol.Config, selected subject.Subject, index int, warmup bool, proof protocol.PathProof) (protocol.Repetition, error) {
-	startedAt := time.Now()
-	clientBefore, err := metrics.ReadProcess(os.Getpid())
-	if err != nil {
-		return protocol.Repetition{}, err
-	}
-	systemBefore, err := metrics.ReadSystem()
-	if err != nil {
-		return protocol.Repetition{}, err
-	}
+	var systemBefore metrics.SystemSnapshot
+	var systemAfter metrics.SystemSnapshot
 	var subjectBefore metrics.ProcessSnapshot
+	var subjectAfter metrics.ProcessSnapshot
+	var subjectDeltaErr error
 	provider, hasProcess := selected.(processProvider)
-	if hasProcess && provider.ProcessID() > 0 {
-		subjectBefore, err = metrics.ReadProcess(provider.ProcessID())
-		if err != nil {
-			return protocol.Repetition{}, err
-		}
+	request := makeWorkerRequest(config, index, false)
+	workerResult, workloadErr := worker.RunProcess(ctx, "", worker.TemporaryRoot(config.Execution.TemporaryDirectory), request, worker.ProcessHooks{
+		BeforeStart: func(ready worker.Ready) error {
+			var err error
+			systemBefore, err = metrics.ReadSystem()
+			if err != nil {
+				return err
+			}
+			if hasProcess && provider.ProcessID() > 0 {
+				subjectBefore, err = metrics.ReadProcess(provider.ProcessID())
+			}
+			return err
+		},
+		AfterWorkload: func() error {
+			var err error
+			systemAfter, err = metrics.ReadSystem()
+			if err != nil {
+				return err
+			}
+			if hasProcess && provider.ProcessID() > 0 {
+				subjectAfter, err = metrics.ReadProcess(provider.ProcessID())
+			}
+			return err
+		},
+	})
+	if workerResult.Workload.Timing.StartedAt.IsZero() {
+		return protocol.Repetition{}, workloadErr
 	}
-	counters, latency, workloadErr := runWorkload(ctx, config.Workload, config.RunID, index)
-	duration := time.Since(startedAt)
-	clientAfter, clientErr := metrics.ReadProcess(os.Getpid())
-	systemAfter, systemErr := metrics.ReadSystem()
-	clientDelta, deltaErr := metrics.ProcessDelta(clientBefore, clientAfter)
 	systemDelta, systemDeltaErr := metrics.SystemDelta(systemBefore, systemAfter)
 	var subjectDelta metrics.ProcessSnapshot
 	if hasProcess && provider.ProcessID() > 0 {
-		after, readErr := metrics.ReadProcess(provider.ProcessID())
-		if readErr == nil {
-			subjectDelta, readErr = metrics.ProcessDelta(subjectBefore, after)
-		}
-		if err == nil {
-			err = readErr
-		}
+		subjectDelta, subjectDeltaErr = metrics.ProcessDelta(subjectBefore, subjectAfter)
 	}
-	err = errors.Join(err, workloadErr, clientErr, systemErr, deltaErr, systemDeltaErr)
-	validity := protocol.Validity{Valid: err == nil && counters.Failed == 0 && counters.Corrupt == 0}
+	err := errors.Join(workloadErr, systemDeltaErr, subjectDeltaErr)
+	validity := protocol.Validity{Valid: err == nil && workerResult.Workload.Counters.Failed == 0 && workerResult.Workload.Counters.Corrupt == 0}
 	if err != nil {
 		validity.Reasons = []string{err.Error()}
 	}
+	startedAt := workerResult.Workload.Timing.StartedAt
+	finishedAt := workerResult.Workload.Timing.FinishedAt
+	duration := finishedAt.Sub(startedAt)
 	result := protocol.Repetition{
 		ProtocolVersion: protocol.Version, RunID: config.RunID, Subject: config.Subject.Kind, Index: index, Warmup: warmup,
-		StartedAt: startedAt, DurationNS: duration.Nanoseconds(), Counters: counters, LatencyNS: latency, PathProof: proof, Validity: validity,
+		StartedAt: startedAt, DurationNS: duration.Nanoseconds(), Counters: workerResult.Workload.Counters, LatencyNS: workerResult.Workload.LatencyNS,
+		Worker: &workerResult.Identity, WorkloadTiming: &workerResult.Workload.Timing, PathProof: proof, Validity: validity,
 		Resources: protocol.ResourceDelta{
-			WallNanoseconds: duration.Nanoseconds(), ClientUserTicks: clientDelta.UserTicks, ClientSystemTicks: clientDelta.SystemTicks,
-			ClientReadBytes: clientDelta.ReadBytes, ClientWriteBytes: clientDelta.WriteBytes, ClientRSSBytes: clientDelta.RSSBytes,
-			ClientRunNanoseconds: clientDelta.RunNanoseconds,
+			WallNanoseconds: duration.Nanoseconds(), ClientUserTicks: workerResult.Process.UserTicks, ClientSystemTicks: workerResult.Process.SystemTicks,
+			ClientReadBytes: workerResult.Process.ReadBytes, ClientWriteBytes: workerResult.Process.WriteBytes, ClientRSSBytes: workerResult.Process.RSSBytes,
+			ClientRunNanoseconds: workerResult.Process.RunNanoseconds,
 			SubjectUserTicks:     subjectDelta.UserTicks, SubjectSystemTicks: subjectDelta.SystemTicks, SubjectReadBytes: subjectDelta.ReadBytes,
 			SubjectRunNanoseconds: subjectDelta.RunNanoseconds,
 			SubjectWriteBytes:     subjectDelta.WriteBytes, SubjectRSSBytes: subjectDelta.RSSBytes, SystemCPUTicks: systemDelta.CPUTicks,
@@ -263,24 +287,27 @@ func runWarmup(ctx context.Context, config protocol.Config, index int) (subject.
 	warmup := config.Workload
 	warmup.Requests = max(8, warmup.Connections, warmup.Flows)
 	warmup.DurationMS = 0
-	if warmup.Mode == protocol.ModePPS {
-		warmup.Mode = protocol.ModeEcho
-	}
+	warmup.Mode = protocol.ModeEcho
+	warmup.PayloadBytes = min(warmup.PayloadBytes, 64)
 	warmup.OfferedPPS = 0
-	counters, _, err := runWorkload(ctx, warmup, config.RunID+"-proof", index)
-	details, _ := json.Marshal(counters)
-	return subject.WarmupEvidence{Valid: err == nil && counters.Operations > 0 && counters.Failed == 0 && counters.Corrupt == 0, Token: fmt.Sprintf("%s-proof-%d", config.RunID, index), Details: details}, err
+	warmupConfig := config
+	warmupConfig.Workload = warmup
+	result, err := worker.RunProcess(ctx, "", worker.TemporaryRoot(config.Execution.TemporaryDirectory), makeWorkerRequest(warmupConfig, index, true), worker.ProcessHooks{})
+	details, _ := json.Marshal(result)
+	counters := result.Workload.Counters
+	valid := err == nil && counters.Operations > 0 && counters.Failed == 0 && counters.Corrupt == 0 && len(result.Workload.SocketPaths) > 0
+	return subject.WarmupEvidence{Valid: valid, Token: fmt.Sprintf("%s-proof-%d", config.RunID, index), Details: details}, err
 }
 
-func runWorkload(ctx context.Context, workload protocol.WorkloadConfig, runID string, index int) (protocol.Counters, []int64, error) {
-	timeout := time.Duration(workload.TimeoutMS) * time.Millisecond
-	duration := time.Duration(workload.DurationMS) * time.Millisecond
-	if workload.Protocol == protocol.ProtocolTCP {
-		return benchTCP.Run(ctx, benchTCP.ClientConfig{Target: workload.Target, Mode: workload.Mode, PayloadBytes: workload.PayloadBytes, Requests: workload.Requests, Duration: duration, Connections: workload.Connections, Timeout: timeout})
+func makeWorkerRequest(config protocol.Config, index int, collectProof bool) worker.Request {
+	cgroupPath := ""
+	if config.Subject.Kind == protocol.SubjectEBPFCgroup {
+		cgroupPath = config.Subject.CgroupPath
 	}
-	hash := fnv.New32a()
-	_, _ = fmt.Fprintf(hash, "%s-%d", runID, index)
-	return benchUDP.Run(ctx, benchUDP.ClientConfig{Target: workload.Target, Mode: workload.Mode, PayloadBytes: workload.PayloadBytes, Requests: workload.Requests, Duration: duration, Flows: workload.Flows, OfferedPPS: workload.OfferedPPS, Timeout: timeout, RunHash: hash.Sum32()})
+	return worker.Request{
+		ProtocolVersion: protocol.Version, RunID: config.RunID, Index: index, Workload: config.Workload,
+		WorkerUID: config.Execution.WorkerUID, CgroupPath: cgroupPath, CollectProof: collectProof,
+	}
 }
 
 func buildVersion() string {
