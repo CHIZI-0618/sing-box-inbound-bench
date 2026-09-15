@@ -5,8 +5,8 @@
 当前原型已经实现：
 
 - 版本化配置、manifest 和逐 repetition 结果格式；
-- 原生 TCP echo、bulk upload、bulk download、短连接 client/server；
-- 原生 UDP echo 与开放环固定 offered-load PPS client/server；
+- 原生 TCP echo、真正单向连续流的 bulk upload/download、短连接 client/server；
+- 原生 UDP echo 与按全局速率调度的开放环固定 offered-load PPS client/server；
 - `raw`、`direct`、`ebpf-tc`、`ebpf-cgroup` subject；
 - sing-box 配置生成、配置检查、子进程管理和 eBPF Clash API 运行时诊断；
 - 客户端、sing-box 进程、整机 CPU 和 NET_RX/NET_TX softirq 分账；
@@ -250,6 +250,13 @@ eBPF cgroup 测试应使用专用子 cgroup，只将 benchmark client 放入其�
 UDP 数据包携带 magic、case ID、flow ID、sequence、发送单调时间和 payload checksum。
 开放环发送器必须预分配 buffer，并在平台支持时使用批量收发，避免负载发生器先成为
 瓶颈。
+
+`offered_pps` 表示整个 workload 的总发送速率，不是每个 flow 的速率。发送器按绝对
+单调时钟统一调度并轮询分配给各 flow，避免 flow 数增加时隐式放大 offered load。
+
+结果中的 `bytes_sent` 与 `bytes_received` 只统计应用有效载荷，不包含 TCP benchmark
+frame、UDP benchmark header 以及 TCP/IP/Ethernet 头。真实链路字节数必须使用相同测量
+窗口内的接口 counters；二者不可互相替代。
 
 饱和 UDP 只能说明“在当前 loss 下的最大 delivered rate”。正式比较还必须报告满足
 目标丢包率（例如 `<0.1%`）的最大可持续 offered load。

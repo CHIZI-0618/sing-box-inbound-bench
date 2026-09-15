@@ -18,7 +18,7 @@ import (
 
 const (
 	frameMagic   = 0x53424942 // SBIB
-	frameVersion = 1
+	frameVersion = 2
 	headerSize   = 24
 	opEcho       = 1
 	opUpload     = 2
@@ -67,68 +67,116 @@ func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 }
 
 func (s Server) serveConnection(connection net.Conn) error {
-	reader := bufio.NewReaderSize(connection, 64<<10)
-	writer := bufio.NewWriterSize(connection, 64<<10)
+	reader := bufio.NewReaderSize(connection, 256<<10)
+	writer := bufio.NewWriterSize(connection, 256<<10)
 	headerBuffer := make([]byte, headerSize)
-	payload := make([]byte, s.MaxPayload)
-	for {
-		header, err := readHeader(reader, headerBuffer)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		if header.length > uint32(len(payload)) {
-			return fmt.Errorf("payload %d exceeds server maximum %d", header.length, len(payload))
-		}
-		body := payload[:header.length]
-		switch header.operation {
-		case opEcho, opUpload, opShort:
-			if _, err = io.ReadFull(reader, body); err != nil {
+	header, err := readHeader(reader, headerBuffer)
+	if err != nil {
+		return err
+	}
+	if header.length > uint32(s.MaxPayload) {
+		return fmt.Errorf("payload %d exceeds server maximum %d", header.length, s.MaxPayload)
+	}
+	switch header.operation {
+	case opUpload:
+		return s.serveUpload(reader, writer, header, headerBuffer)
+	case opDownload:
+		return s.serveDownload(connection, header, headerBuffer)
+	case opEcho, opShort:
+		payload := make([]byte, header.length)
+		for {
+			if _, err = io.ReadFull(reader, payload); err != nil {
 				return err
 			}
-			if crc32.ChecksumIEEE(body) != header.checksum {
+			if crc32.ChecksumIEEE(payload) != header.checksum {
 				return errors.New("request checksum mismatch")
 			}
 			response := header
 			response.flags = flagResponse
-			if header.operation == opUpload {
-				response.length = 0
-				response.checksum = 0
-			}
 			writeHeader(headerBuffer, response)
 			if _, err = writer.Write(headerBuffer); err != nil {
 				return err
 			}
-			if header.operation == opEcho || header.operation == opShort {
-				if _, err = writer.Write(body); err != nil {
-					return err
+			if _, err = writer.Write(payload); err != nil {
+				return err
+			}
+			if err = writer.Flush(); err != nil {
+				return err
+			}
+			if header.operation == opShort {
+				return nil
+			}
+			header, err = readHeader(reader, headerBuffer)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
 				}
-			}
-		case opDownload:
-			fillPayload(body, header.sequence)
-			response := header
-			response.flags = flagResponse
-			response.checksum = crc32.ChecksumIEEE(body)
-			writeHeader(headerBuffer, response)
-			if _, err = writer.Write(headerBuffer); err != nil {
 				return err
 			}
-			if _, err = writer.Write(body); err != nil {
-				return err
+			if header.operation != opEcho || header.length > uint32(s.MaxPayload) {
+				return errors.New("unexpected frame on echo connection")
 			}
-		default:
-			return fmt.Errorf("unsupported TCP operation %d", header.operation)
+			if int(header.length) != len(payload) {
+				payload = make([]byte, header.length)
+			}
 		}
-		if err = writer.Flush(); err != nil {
-			return err
-		}
-		if header.operation == opShort {
-			return nil
-		}
+	default:
+		return fmt.Errorf("unsupported TCP operation %d", header.operation)
 	}
 }
+
+// An upload control header describes one repeated, checksum-protected payload
+// block. sequence is the requested block count, or zero for a duration-limited
+// stream that ends with TCP half-close. No per-block acknowledgement is sent.
+func (s Server) serveUpload(reader io.Reader, writer *bufio.Writer, control frameHeader, headerBuffer []byte) error {
+	payload := make([]byte, control.length)
+	var completed uint64
+	for control.sequence == 0 || completed < control.sequence {
+		_, err := io.ReadFull(reader, payload)
+		if err != nil {
+			if control.sequence == 0 && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+				break
+			}
+			return err
+		}
+		if crc32.ChecksumIEEE(payload) != control.checksum {
+			return errors.New("upload payload checksum mismatch")
+		}
+		completed++
+	}
+	response := frameHeader{operation: opUpload, flags: flagResponse, sequence: completed}
+	writeHeader(headerBuffer, response)
+	if _, err := writer.Write(headerBuffer); err != nil {
+		return err
+	}
+	return writer.Flush()
+}
+
+// A download control header requests repeated checksum-protected blocks.
+// sequence is the requested block count, or zero until the client closes the
+// connection at its duration boundary. Frames are written continuously without
+// request/response pacing between blocks.
+func (s Server) serveDownload(connection net.Conn, control frameHeader, headerBuffer []byte) error {
+	payload := make([]byte, control.length)
+	fillPayload(payload, control.checksumSeed())
+	checksum := crc32.ChecksumIEEE(payload)
+	var completed uint64
+	for control.sequence == 0 || completed < control.sequence {
+		completed++
+		response := frameHeader{operation: opDownload, flags: flagResponse, length: uint32(len(payload)), sequence: completed, checksum: checksum}
+		writeHeader(headerBuffer, response)
+		buffers := net.Buffers{headerBuffer, payload}
+		if _, err := buffers.WriteTo(connection); err != nil {
+			if control.sequence == 0 && (errors.Is(err, net.ErrClosed) || isNetworkTimeout(err)) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (h frameHeader) checksumSeed() uint64 { return uint64(h.checksum)<<32 | uint64(h.length) }
 
 type ClientConfig struct {
 	Target       string
@@ -147,8 +195,6 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 	if config.Timeout <= 0 {
 		config.Timeout = 2 * time.Second
 	}
-	ctx, cancel := deadlineContext(ctx, config.Duration)
-	defer cancel()
 	var counters atomicCounters
 	latencyByWorker := make([][]int64, config.Connections)
 	var workers sync.WaitGroup
@@ -159,10 +205,15 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 			defer workers.Done()
 			<-start
 			var err error
-			if config.Mode == protocol.ModeShort {
+			switch config.Mode {
+			case protocol.ModeShort:
 				err = runShort(ctx, config, worker, &counters, &latencyByWorker[worker])
-			} else {
-				err = runPersistent(ctx, config, worker, &counters, &latencyByWorker[worker])
+			case protocol.ModeBulkUpload:
+				err = runUpload(ctx, config, worker, &counters)
+			case protocol.ModeBulkDownload:
+				err = runDownload(ctx, config, worker, &counters)
+			default:
+				err = runEcho(ctx, config, worker, &counters, &latencyByWorker[worker])
 			}
 			if err != nil && ctx.Err() == nil {
 				counters.setError(err)
@@ -198,7 +249,7 @@ func (c *atomicCounters) snapshot() protocol.Counters {
 	return protocol.Counters{Operations: c.operations.Load(), Failed: c.failed.Load(), BytesSent: c.bytesSent.Load(), BytesReceived: c.bytesReceived.Load()}
 }
 
-func runPersistent(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64) error {
+func runEcho(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64) error {
 	connection, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "tcp", config.Target)
 	if err != nil {
 		return err
@@ -209,60 +260,43 @@ func runPersistent(ctx context.Context, config ClientConfig, worker int, counter
 	responsePayload := make([]byte, config.PayloadBytes)
 	sequence := uint64(worker) << 48
 	requests := perWorkerRequests(config.Requests, config.Connections, worker)
+	end := endTime(config.Duration)
 	for completed := 0; requests == 0 || completed < requests; completed++ {
-		if err = ctx.Err(); err != nil {
+		if ctx.Err() != nil || (!end.IsZero() && time.Now().After(end)) {
 			return nil
 		}
 		sequence++
 		fillPayload(payload, sequence)
 		operation := uint8(opEcho)
-		switch config.Mode {
-		case protocol.ModeBulkUpload:
-			operation = opUpload
-		case protocol.ModeBulkDownload:
-			operation = opDownload
-		case protocol.ModeShort:
+		if config.Mode == protocol.ModeShort {
 			operation = opShort
 		}
-		header := frameHeader{operation: operation, length: uint32(len(payload)), sequence: sequence}
-		if operation != opDownload {
-			header.checksum = crc32.ChecksumIEEE(payload)
-		}
+		header := frameHeader{operation: operation, length: uint32(len(payload)), sequence: sequence, checksum: crc32.ChecksumIEEE(payload)}
 		started := time.Now()
-		if err = connection.SetDeadline(started.Add(config.Timeout)); err != nil {
+		if err = connection.SetDeadline(operationDeadline(started, end, config.Timeout)); err != nil {
 			return err
 		}
 		writeHeader(headerBuffer, header)
 		if err = writeAll(connection, headerBuffer); err != nil {
 			return err
 		}
-		counters.bytesSent.Add(headerSize)
-		if operation != opDownload {
-			if err = writeAll(connection, payload); err != nil {
-				return err
-			}
-			counters.bytesSent.Add(uint64(len(payload)))
+		if err = writeAll(connection, payload); err != nil {
+			return err
 		}
+		counters.bytesSent.Add(uint64(len(payload)))
 		response, err := readHeader(connection, headerBuffer)
 		if err != nil {
 			return err
 		}
-		counters.bytesReceived.Add(headerSize)
-		if response.flags != flagResponse || response.sequence != sequence || response.operation != operation {
+		if response.flags != flagResponse || response.sequence != sequence || response.operation != operation || response.length != uint32(len(responsePayload)) {
 			return errors.New("response header mismatch")
 		}
-		if response.length > 0 {
-			if int(response.length) > len(responsePayload) {
-				return errors.New("response payload too large")
-			}
-			body := responsePayload[:response.length]
-			if _, err = io.ReadFull(connection, body); err != nil {
-				return err
-			}
-			counters.bytesReceived.Add(uint64(response.length))
-			if crc32.ChecksumIEEE(body) != response.checksum {
-				return errors.New("response checksum mismatch")
-			}
+		if _, err = io.ReadFull(connection, responsePayload); err != nil {
+			return err
+		}
+		counters.bytesReceived.Add(uint64(len(responsePayload)))
+		if crc32.ChecksumIEEE(responsePayload) != response.checksum {
+			return errors.New("response checksum mismatch")
 		}
 		*latencies = append(*latencies, time.Since(started).Nanoseconds())
 		counters.operations.Add(1)
@@ -272,8 +306,9 @@ func runPersistent(ctx context.Context, config ClientConfig, worker int, counter
 
 func runShort(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64) error {
 	requests := perWorkerRequests(config.Requests, config.Connections, worker)
+	end := endTime(config.Duration)
 	for completed := 0; requests == 0 || completed < requests; completed++ {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || (!end.IsZero() && time.Now().After(end)) {
 			return nil
 		}
 		one := config
@@ -284,7 +319,7 @@ func runShort(ctx context.Context, config ClientConfig, worker int, counters *at
 		started := time.Now()
 		localCounters := &atomicCounters{}
 		var localLatency []int64
-		if err := runPersistent(ctx, one, worker+completed, localCounters, &localLatency); err != nil {
+		if err := runEcho(ctx, one, worker+completed, localCounters, &localLatency); err != nil {
 			return err
 		}
 		counters.operations.Add(localCounters.operations.Load())
@@ -293,6 +328,141 @@ func runShort(ctx context.Context, config ClientConfig, worker int, counters *at
 		*latencies = append(*latencies, time.Since(started).Nanoseconds())
 	}
 	return nil
+}
+
+func runUpload(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters) error {
+	connection, err := dialTCP(ctx, config)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	payload := make([]byte, config.PayloadBytes)
+	fillPayload(payload, uint64(worker+1))
+	blocks := perWorkerRequests(config.Requests, config.Connections, worker)
+	control := frameHeader{operation: opUpload, length: uint32(len(payload)), sequence: uint64(blocks), checksum: crc32.ChecksumIEEE(payload)}
+	headerBuffer := make([]byte, headerSize)
+	writeHeader(headerBuffer, control)
+	if err = writeAll(connection, headerBuffer); err != nil {
+		return err
+	}
+	end := endTime(config.Duration)
+	var completed uint64
+	for blocks == 0 || completed < uint64(blocks) {
+		if ctx.Err() != nil || (!end.IsZero() && time.Now().After(end)) {
+			break
+		}
+		if !end.IsZero() {
+			_ = connection.SetWriteDeadline(end)
+		}
+		if err = writeAll(connection, payload); err != nil {
+			if blocks == 0 && isNetworkTimeout(err) {
+				break
+			}
+			return err
+		}
+		completed++
+		counters.operations.Add(1)
+		counters.bytesSent.Add(uint64(len(payload)))
+	}
+	if err = connection.CloseWrite(); err != nil {
+		return err
+	}
+	_ = connection.SetReadDeadline(time.Now().Add(config.Timeout))
+	response, err := readHeader(connection, headerBuffer)
+	if err != nil {
+		return err
+	}
+	if response.operation != opUpload || response.flags != flagResponse || response.sequence != completed {
+		return fmt.Errorf("upload acknowledgement mismatch: completed=%d acknowledged=%d", completed, response.sequence)
+	}
+	return nil
+}
+
+func runDownload(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters) error {
+	connection, err := dialTCP(ctx, config)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	blocks := perWorkerRequests(config.Requests, config.Connections, worker)
+	control := frameHeader{operation: opDownload, length: uint32(config.PayloadBytes), sequence: uint64(blocks), checksum: uint32(worker + 1)}
+	headerBuffer := make([]byte, headerSize)
+	writeHeader(headerBuffer, control)
+	if err = writeAll(connection, headerBuffer); err != nil {
+		return err
+	}
+	expectedPayload := make([]byte, config.PayloadBytes)
+	fillPayload(expectedPayload, control.checksumSeed())
+	expectedChecksum := crc32.ChecksumIEEE(expectedPayload)
+	payload := make([]byte, config.PayloadBytes)
+	end := endTime(config.Duration)
+	var completed uint64
+	for blocks == 0 || completed < uint64(blocks) {
+		if ctx.Err() != nil || (!end.IsZero() && time.Now().After(end)) {
+			return nil
+		}
+		deadline := time.Now().Add(config.Timeout)
+		if !end.IsZero() && end.Before(deadline) {
+			deadline = end
+		}
+		_ = connection.SetReadDeadline(deadline)
+		response, readErr := readHeader(connection, headerBuffer)
+		if readErr != nil {
+			if blocks == 0 && isNetworkTimeout(readErr) {
+				return nil
+			}
+			return readErr
+		}
+		if response.operation != opDownload || response.flags != flagResponse || response.length != uint32(len(payload)) || response.sequence != completed+1 || response.checksum != expectedChecksum {
+			return errors.New("download frame header mismatch")
+		}
+		if _, err = io.ReadFull(connection, payload); err != nil {
+			if blocks == 0 && isNetworkTimeout(err) {
+				return nil
+			}
+			return err
+		}
+		if crc32.ChecksumIEEE(payload) != expectedChecksum {
+			return errors.New("download payload checksum mismatch")
+		}
+		completed++
+		counters.operations.Add(1)
+		counters.bytesReceived.Add(uint64(len(payload)))
+	}
+	return nil
+}
+
+func dialTCP(ctx context.Context, config ClientConfig) (*net.TCPConn, error) {
+	connection, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "tcp", config.Target)
+	if err != nil {
+		return nil, err
+	}
+	tcpConnection, ok := connection.(*net.TCPConn)
+	if !ok {
+		_ = connection.Close()
+		return nil, errors.New("TCP dial did not return a TCP connection")
+	}
+	return tcpConnection, nil
+}
+
+func endTime(duration time.Duration) time.Time {
+	if duration <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(duration)
+}
+
+func operationDeadline(started, end time.Time, timeout time.Duration) time.Time {
+	deadline := started.Add(timeout)
+	if !end.IsZero() && end.Before(deadline) {
+		return end
+	}
+	return deadline
+}
+
+func isNetworkTimeout(err error) bool {
+	var networkError net.Error
+	return errors.As(err, &networkError) && networkError.Timeout()
 }
 
 func writeAll(writer io.Writer, content []byte) error {
@@ -307,13 +477,6 @@ func writeAll(writer io.Writer, content []byte) error {
 		content = content[written:]
 	}
 	return nil
-}
-
-func deadlineContext(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
-	if duration > 0 {
-		return context.WithTimeout(parent, duration)
-	}
-	return context.WithCancel(parent)
 }
 
 func perWorkerRequests(total, workers, worker int) int {
@@ -345,11 +508,8 @@ func readHeader(reader io.Reader, buffer []byte) (frameHeader, error) {
 		return frameHeader{}, errors.New("invalid TCP benchmark frame")
 	}
 	return frameHeader{
-		operation: buffer[5],
-		flags:     binary.BigEndian.Uint16(buffer[6:8]),
-		length:    binary.BigEndian.Uint32(buffer[8:12]),
-		sequence:  binary.BigEndian.Uint64(buffer[12:20]),
-		checksum:  binary.BigEndian.Uint32(buffer[20:24]),
+		operation: buffer[5], flags: binary.BigEndian.Uint16(buffer[6:8]), length: binary.BigEndian.Uint32(buffer[8:12]),
+		sequence: binary.BigEndian.Uint64(buffer[12:20]), checksum: binary.BigEndian.Uint32(buffer[20:24]),
 	}, nil
 }
 

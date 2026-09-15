@@ -23,8 +23,49 @@ func TestTCPModes(t *testing.T) {
 			if runErr != nil {
 				t.Fatal(runErr)
 			}
-			if result.Operations != 20 || len(latency) != 20 || result.Failed != 0 {
+			expectedLatency := 20
+			if mode == protocol.ModeBulkUpload || mode == protocol.ModeBulkDownload {
+				expectedLatency = 0
+			}
+			if result.Operations != 20 || len(latency) != expectedLatency || result.Failed != 0 {
 				t.Fatalf("result=%+v latency=%d", result, len(latency))
+			}
+			if (mode == protocol.ModeEcho || mode == protocol.ModeShort || mode == protocol.ModeBulkUpload) && result.BytesSent != 20*4096 {
+				t.Fatalf("bytes sent includes framing or misses payload: %d", result.BytesSent)
+			}
+			if (mode == protocol.ModeEcho || mode == protocol.ModeShort || mode == protocol.ModeBulkDownload) && result.BytesReceived != 20*4096 {
+				t.Fatalf("bytes received includes framing or misses payload: %d", result.BytesReceived)
+			}
+		})
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTCPDurationBulk(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Server{}).Serve(ctx, listener) }()
+	for _, mode := range []protocol.WorkloadMode{protocol.ModeBulkUpload, protocol.ModeBulkDownload} {
+		t.Run(string(mode), func(t *testing.T) {
+			result, latency, runErr := Run(context.Background(), ClientConfig{Target: listener.Addr().String(), Mode: mode, PayloadBytes: 16 << 10, Duration: 50 * time.Millisecond, Connections: 2, Timeout: time.Second})
+			if runErr != nil {
+				t.Fatal(runErr)
+			}
+			if result.Operations == 0 || result.Failed != 0 || len(latency) != 0 {
+				t.Fatalf("result=%+v latency=%d", result, len(latency))
+			}
+			if mode == protocol.ModeBulkUpload && result.BytesSent != result.Operations*uint64(16<<10) {
+				t.Fatalf("upload bytes are not complete payload blocks: %+v", result)
+			}
+			if mode == protocol.ModeBulkDownload && result.BytesReceived != result.Operations*uint64(16<<10) {
+				t.Fatalf("download bytes are not complete payload blocks: %+v", result)
 			}
 		})
 	}

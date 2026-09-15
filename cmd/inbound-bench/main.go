@@ -263,6 +263,9 @@ func runWarmup(ctx context.Context, config protocol.Config, index int) (subject.
 	warmup := config.Workload
 	warmup.Requests = max(8, warmup.Connections, warmup.Flows)
 	warmup.DurationMS = 0
+	if warmup.Mode == protocol.ModePPS {
+		warmup.Mode = protocol.ModeEcho
+	}
 	warmup.OfferedPPS = 0
 	counters, _, err := runWorkload(ctx, warmup, config.RunID+"-proof", index)
 	details, _ := json.Marshal(counters)

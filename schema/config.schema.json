@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "run_id", "subject", "workload", "execution"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v1" },
+    "protocol_version": { "const": "inbound-bench/v2" },
     "run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
     "subject": {
       "type": "object",
@@ -52,10 +52,16 @@
         "duration_ms": { "type": "integer", "minimum": 0 },
         "connections": { "type": "integer", "minimum": 1 },
         "flows": { "type": "integer", "minimum": 1 },
-        "offered_pps": { "type": "integer", "minimum": 0 },
+        "offered_pps": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
         "timeout_ms": { "type": "integer", "minimum": 1 }
       },
       "allOf": [
+		{
+		  "oneOf": [
+			{ "required": ["requests"], "not": { "required": ["duration_ms"] }, "properties": { "requests": { "minimum": 1 } } },
+			{ "required": ["duration_ms"], "not": { "required": ["requests"] }, "properties": { "duration_ms": { "minimum": 1 } } }
+		  ]
+		},
         {
           "if": { "properties": { "protocol": { "const": "tcp" } }, "required": ["protocol"] },
           "then": { "properties": { "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short"] } } }
@@ -66,8 +72,12 @@
         },
         {
           "if": { "properties": { "mode": { "const": "pps" } }, "required": ["mode"] },
-          "then": { "required": ["offered_pps"], "properties": { "offered_pps": { "type": "integer", "minimum": 1 } } }
-        }
+		  "then": { "required": ["offered_pps"], "properties": { "offered_pps": { "type": "integer", "minimum": 1, "maximum": 1000000000 } } }
+		},
+		{
+		  "if": { "properties": { "mode": { "not": { "const": "pps" } } }, "required": ["mode"] },
+		  "then": { "properties": { "offered_pps": { "const": 0 } } }
+		}
       ]
     },
     "execution": {

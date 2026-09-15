@@ -1,5 +1,5 @@
 {
-  "protocol_version": "inbound-bench/v1",
+  "protocol_version": "inbound-bench/v2",
   "run_id": "example-raw-tcp",
   "subject": {
     "kind": "raw"

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const Version = "inbound-bench/v1"
+const Version = "inbound-bench/v2"
 
 type SubjectKind string
 
@@ -244,11 +244,28 @@ func (c Config) Validate() error {
 	if c.Workload.Requests < 0 || c.Workload.DurationMS < 0 || c.Workload.OfferedPPS < 0 {
 		errs = append(errs, errors.New("requests, duration_ms and offered_pps cannot be negative"))
 	}
-	if c.Workload.Requests == 0 && c.Workload.DurationMS == 0 {
-		errs = append(errs, errors.New("one of workload.requests or workload.duration_ms is required"))
+	if (c.Workload.Requests == 0) == (c.Workload.DurationMS == 0) {
+		errs = append(errs, errors.New("exactly one of workload.requests or workload.duration_ms is required"))
 	}
-	if c.Workload.Mode == ModePPS && c.Workload.OfferedPPS < 1 {
-		errs = append(errs, errors.New("workload.offered_pps must be positive for UDP PPS mode"))
+	if c.Workload.Mode == ModePPS {
+		if c.Workload.OfferedPPS < 1 || c.Workload.OfferedPPS > 1_000_000_000 {
+			errs = append(errs, errors.New("workload.offered_pps must be between 1 and 1000000000 for UDP PPS mode"))
+		}
+		packetCount := uint64(max(c.Workload.Requests, 0))
+		if packetCount == 0 && c.Workload.DurationMS > 0 && c.Workload.OfferedPPS > 0 {
+			seconds := uint64(c.Workload.DurationMS / 1_000)
+			rate := uint64(c.Workload.OfferedPPS)
+			if seconds > ^uint64(0)/rate {
+				packetCount = ^uint64(0)
+			} else {
+				packetCount = seconds*rate + uint64(c.Workload.DurationMS%1_000)*rate/1_000
+			}
+		}
+		if c.Workload.Flows > 0 && packetCount < uint64(c.Workload.Flows) {
+			errs = append(errs, fmt.Errorf("UDP PPS workload has %d packets for %d flows", packetCount, c.Workload.Flows))
+		}
+	} else if c.Workload.OfferedPPS != 0 {
+		errs = append(errs, errors.New("workload.offered_pps is only valid for UDP PPS mode"))
 	}
 	if c.Workload.Connections < 1 || c.Workload.Flows < 1 {
 		errs = append(errs, errors.New("connections and flows must be positive"))
@@ -270,6 +287,9 @@ func (c Config) Validate() error {
 		}
 		if _, _, err := net.SplitHostPort(c.Subject.Target); err != nil {
 			errs = append(errs, fmt.Errorf("subject.target: %w", err))
+		}
+		if c.Workload.Target != c.Subject.Listen {
+			errs = append(errs, errors.New("workload.target must equal subject.listen for the direct baseline"))
 		}
 	}
 	if (c.Subject.Kind == SubjectEBPFTC || c.Subject.Kind == SubjectEBPFCgroup) && len(c.Subject.IncludeUID) == 0 {

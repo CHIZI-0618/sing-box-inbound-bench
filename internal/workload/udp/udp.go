@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -15,7 +17,7 @@ import (
 
 const (
 	packetMagic   = 0x53424955 // SBIU
-	packetVersion = 1
+	packetVersion = 2
 	headerSize    = 40
 	flagResponse  = 1
 )
@@ -85,11 +87,10 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 	if config.Mode == "" {
 		config.Mode = protocol.ModeEcho
 	}
-	workDuration := config.Duration
 	if config.Mode == protocol.ModePPS {
-		workDuration = 0
+		return runPPS(ctx, config)
 	}
-	ctx, cancel := deadlineContext(ctx, workDuration)
+	ctx, cancel := deadlineContext(ctx, config.Duration)
 	defer cancel()
 	var counters atomicCounters
 	latencyByFlow := make([][]int64, config.Flows)
@@ -100,24 +101,14 @@ func Run(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, 
 		go func(flow int) {
 			defer workers.Done()
 			<-start
-			var err error
-			if config.Mode == protocol.ModePPS {
-				err = runPPSFlow(ctx, config, flow, &counters, &latencyByFlow[flow])
-			} else {
-				err = runEchoFlow(ctx, config, flow, &counters, &latencyByFlow[flow])
-			}
-			if err != nil && ctx.Err() == nil {
+			if err := runEchoFlow(ctx, config, flow, &counters, &latencyByFlow[flow]); err != nil && ctx.Err() == nil {
 				counters.setError(err)
 			}
 		}(flow)
 	}
 	close(start)
 	workers.Wait()
-	latencies := make([]int64, 0)
-	for _, values := range latencyByFlow {
-		latencies = append(latencies, values...)
-	}
-	return counters.snapshot(), latencies, counters.err()
+	return counters.snapshot(), joinLatencies(latencyByFlow), counters.err()
 }
 
 type atomicCounters struct {
@@ -157,33 +148,10 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 	packet := make([]byte, headerSize+config.PayloadBytes)
 	response := make([]byte, len(packet))
 	requests := perWorkerRequests(config.Requests, config.Flows, flow)
-	var interval time.Duration
-	if config.OfferedPPS > 0 {
-		perFlowPPS := (config.OfferedPPS + config.Flows - 1) / config.Flows
-		interval = time.Second / time.Duration(perFlowPPS)
-	}
-	nextSend := time.Now()
 	var previous uint64
 	for completed := 0; requests == 0 || completed < requests; completed++ {
 		if ctx.Err() != nil {
 			return nil
-		}
-		if interval > 0 {
-			if delay := time.Until(nextSend); delay > 0 {
-				timer := time.NewTimer(delay)
-				select {
-				case <-timer.C:
-				case <-ctx.Done():
-					if !timer.Stop() {
-						select {
-						case <-timer.C:
-						default:
-						}
-					}
-					return nil
-				}
-			}
-			nextSend = nextSend.Add(interval)
 		}
 		sequence := uint64(completed + 1)
 		sentAt := time.Now()
@@ -195,7 +163,7 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 			return err
 		}
 		counters.packetsSent.Add(1)
-		counters.bytesSent.Add(uint64(len(packet)))
+		counters.bytesSent.Add(uint64(config.PayloadBytes))
 		length, readErr := connection.Read(response)
 		if readErr != nil {
 			if timeout, ok := readErr.(net.Error); ok && timeout.Timeout() {
@@ -205,140 +173,213 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 			return readErr
 		}
 		counters.packetsReceived.Add(1)
-		counters.bytesReceived.Add(uint64(length))
+		if length >= headerSize {
+			counters.bytesReceived.Add(uint64(length - headerSize))
+		}
 		got, valid := parse(response[:length])
 		if !valid || got.flags&flagResponse == 0 || got.run != config.RunHash || got.flow != uint32(flow) {
 			counters.corrupt.Add(1)
 			continue
 		}
-		if got.sequence <= previous {
-			counters.reordered.Add(1)
-		}
-		previous = got.sequence
-		if got.sequence != sequence {
+		if got.sequence <= previous || got.sequence != sequence {
 			counters.reordered.Add(1)
 			continue
 		}
+		previous = got.sequence
 		*latencies = append(*latencies, time.Since(sentAt).Nanoseconds())
 		counters.operations.Add(1)
 	}
 	return nil
 }
 
-func runPPSFlow(ctx context.Context, config ClientConfig, flow int, counters *atomicCounters, latencies *[]int64) error {
-	connection, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "udp", config.Target)
+type ppsFlow struct {
+	connection net.Conn
+	expected   int
+	sentAt     []atomic.Int64
+	seen       []bool
+	latencies  []int64
+	previous   uint64
+	received   int
+}
+
+func runPPS(ctx context.Context, config ClientConfig) (protocol.Counters, []int64, error) {
+	totalPackets, err := packetCount(config)
 	if err != nil {
-		return err
+		return protocol.Counters{}, nil, err
 	}
-	defer connection.Close()
-	perFlowPPS := (config.OfferedPPS + config.Flows - 1) / config.Flows
-	if perFlowPPS < 1 {
-		return errors.New("offered PPS must be positive")
+	if totalPackets < config.Flows {
+		return protocol.Counters{}, nil, fmt.Errorf("PPS workload has %d packets for %d flows", totalPackets, config.Flows)
 	}
-	requests := perWorkerRequests(config.Requests, config.Flows, flow)
-	if requests == 0 {
-		requests = int((config.Duration*time.Duration(perFlowPPS) + time.Second - 1) / time.Second)
+	flows := make([]ppsFlow, config.Flows)
+	for flow := range flows {
+		connection, dialErr := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "udp", config.Target)
+		if dialErr != nil {
+			closePPSFlows(flows)
+			return protocol.Counters{}, nil, dialErr
+		}
+		expected := perWorkerRequests(totalPackets, config.Flows, flow)
+		flows[flow] = ppsFlow{connection: connection, expected: expected, sentAt: make([]atomic.Int64, expected+1), seen: make([]bool, expected+1), latencies: make([]int64, 0, expected)}
 	}
-	if requests < 1 {
-		return errors.New("PPS mode requires requests or duration")
-	}
-	interval := time.Second / time.Duration(perFlowPPS)
-	packet := make([]byte, headerSize+config.PayloadBytes)
-	response := make([]byte, len(packet))
-	sentAt := make([]atomic.Int64, requests+1)
-	seen := make([]bool, requests+1)
+	defer closePPSFlows(flows)
+	var counters atomicCounters
 	clockBase := time.Now()
-	senderDone := make(chan struct{})
-	receiverDone := make(chan error, 1)
-	deadline := time.Now().Add(time.Duration(requests)*interval + config.Timeout)
-	if err = connection.SetReadDeadline(deadline); err != nil {
-		return err
+	deadline := clockBase.Add(time.Duration(totalPackets)*time.Second/time.Duration(config.OfferedPPS) + config.Timeout)
+	var receivers sync.WaitGroup
+	receiverErrors := make(chan error, len(flows))
+	for flow := range flows {
+		if err = flows[flow].connection.SetReadDeadline(deadline); err != nil {
+			return protocol.Counters{}, nil, err
+		}
+		receivers.Add(1)
+		go func(flow int) {
+			defer receivers.Done()
+			if receiveErr := receivePPSFlow(config, flow, clockBase, &flows[flow], &counters); receiveErr != nil {
+				receiverErrors <- receiveErr
+			}
+		}(flow)
 	}
-	go func() {
-		var previous uint64
-		var received int
-		for {
-			length, readErr := connection.Read(response)
-			if readErr != nil {
-				if timeout, ok := readErr.(net.Error); ok && timeout.Timeout() {
-					receiverDone <- nil
-					return
-				}
-				receiverDone <- readErr
-				return
+	packet := make([]byte, headerSize+config.PayloadBytes)
+	sequences := make([]int, len(flows))
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	for index := 0; index < totalPackets; index++ {
+		target := clockBase.Add(time.Duration(index) * time.Second / time.Duration(config.OfferedPPS))
+		if err = waitUntil(ctx, timer, target); err != nil {
+			closePPSFlows(flows)
+			receivers.Wait()
+			return counters.snapshot(), joinPPSLatencies(flows), err
+		}
+		flow := index % len(flows)
+		sequences[flow]++
+		sequence := sequences[flow]
+		now := time.Now()
+		flows[flow].sentAt[sequence].Store(time.Since(clockBase).Nanoseconds() + 1)
+		build(packet, header{run: config.RunHash, flow: uint32(flow), sequence: uint64(sequence), sentNS: now.UnixNano()})
+		if _, err = flows[flow].connection.Write(packet); err != nil {
+			closePPSFlows(flows)
+			receivers.Wait()
+			return counters.snapshot(), joinPPSLatencies(flows), err
+		}
+		counters.packetsSent.Add(1)
+		counters.bytesSent.Add(uint64(config.PayloadBytes))
+	}
+	receivers.Wait()
+	close(receiverErrors)
+	for receiveErr := range receiverErrors {
+		counters.setError(receiveErr)
+	}
+	for flow := range flows {
+		counters.lost.Add(uint64(flows[flow].expected - flows[flow].received))
+	}
+	return counters.snapshot(), joinPPSLatencies(flows), counters.err()
+}
+
+func receivePPSFlow(config ClientConfig, flow int, clockBase time.Time, state *ppsFlow, counters *atomicCounters) error {
+	response := make([]byte, headerSize+config.PayloadBytes)
+	for state.received < state.expected {
+		length, err := state.connection.Read(response)
+		if err != nil {
+			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+				return nil
 			}
-			counters.packetsReceived.Add(1)
-			counters.bytesReceived.Add(uint64(length))
-			got, valid := parse(response[:length])
-			if !valid || got.flags&flagResponse == 0 || got.run != config.RunHash || got.flow != uint32(flow) || got.sequence == 0 || got.sequence > uint64(requests) {
-				counters.corrupt.Add(1)
-				continue
+			if errors.Is(err, net.ErrClosed) {
+				return nil
 			}
-			if got.sequence <= previous {
-				counters.reordered.Add(1)
-			}
-			previous = got.sequence
-			if seen[got.sequence] {
-				counters.reordered.Add(1)
-				continue
-			}
-			seen[got.sequence] = true
-			startedOffset := sentAt[got.sequence].Load()
-			if startedOffset == 0 {
-				counters.corrupt.Add(1)
-				continue
-			}
-			*latencies = append(*latencies, time.Since(clockBase).Nanoseconds()-(startedOffset-1))
-			counters.operations.Add(1)
-			received++
+			return err
+		}
+		counters.packetsReceived.Add(1)
+		if length >= headerSize {
+			counters.bytesReceived.Add(uint64(length - headerSize))
+		}
+		got, valid := parse(response[:length])
+		if !valid || got.flags&flagResponse == 0 || got.run != config.RunHash || got.flow != uint32(flow) || got.sequence == 0 || got.sequence > uint64(state.expected) {
+			counters.corrupt.Add(1)
+			continue
+		}
+		if got.sequence <= state.previous {
+			counters.reordered.Add(1)
+		}
+		state.previous = got.sequence
+		if state.seen[got.sequence] {
+			counters.reordered.Add(1)
+			continue
+		}
+		state.seen[got.sequence] = true
+		startedOffset := state.sentAt[got.sequence].Load()
+		if startedOffset == 0 {
+			counters.corrupt.Add(1)
+			continue
+		}
+		state.latencies = append(state.latencies, time.Since(clockBase).Nanoseconds()-(startedOffset-1))
+		state.received++
+		counters.operations.Add(1)
+	}
+	return nil
+}
+
+func packetCount(config ClientConfig) (int, error) {
+	if config.OfferedPPS < 1 || config.OfferedPPS > 1_000_000_000 {
+		return 0, errors.New("offered PPS must be between 1 and 1000000000")
+	}
+	if config.Requests > 0 {
+		return config.Requests, nil
+	}
+	seconds := config.Duration / time.Second
+	remainder := config.Duration % time.Second
+	if seconds > time.Duration(math.MaxInt/config.OfferedPPS) {
+		return 0, errors.New("PPS packet count overflows int")
+	}
+	total := int(seconds)*config.OfferedPPS + int(remainder)*config.OfferedPPS/int(time.Second)
+	if total < 1 {
+		return 0, errors.New("PPS duration is too short for the offered rate")
+	}
+	return total, nil
+}
+
+func waitUntil(ctx context.Context, timer *time.Timer, target time.Time) error {
+	delay := time.Until(target)
+	if delay <= 0 {
+		return nil
+	}
+	timer.Reset(delay)
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		if !timer.Stop() {
 			select {
-			case <-senderDone:
-				if received >= requests {
-					receiverDone <- nil
-					return
-				}
+			case <-timer.C:
 			default:
 			}
 		}
-	}()
-	nextSend := time.Now()
-	for sequence := 1; sequence <= requests; sequence++ {
-		if delay := time.Until(nextSend); delay > 0 {
-			timer := time.NewTimer(delay)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				close(senderDone)
-				_ = connection.SetReadDeadline(time.Now())
-				<-receiverDone
-				return nil
-			}
-		}
-		now := time.Now()
-		sentAt[sequence].Store(time.Since(clockBase).Nanoseconds() + 1)
-		build(packet, header{run: config.RunHash, flow: uint32(flow), sequence: uint64(sequence), sentNS: now.UnixNano()})
-		if _, err = connection.Write(packet); err != nil {
-			close(senderDone)
-			_ = connection.SetReadDeadline(time.Now())
-			<-receiverDone
-			return err
-		}
-		counters.packetsSent.Add(1)
-		counters.bytesSent.Add(uint64(len(packet)))
-		nextSend = nextSend.Add(interval)
+		return ctx.Err()
 	}
-	close(senderDone)
-	err = <-receiverDone
-	// Each flow shares the aggregate counter. Count loss per flow using its
-	// own latency count, which contains exactly one entry per valid response.
-	counters.lost.Add(uint64(requests - len(*latencies)))
-	return err
+}
+
+func closePPSFlows(flows []ppsFlow) {
+	for flow := range flows {
+		if flows[flow].connection != nil {
+			_ = flows[flow].connection.Close()
+		}
+	}
+}
+
+func joinPPSLatencies(flows []ppsFlow) []int64 {
+	result := make([]int64, 0)
+	for flow := range flows {
+		result = append(result, flows[flow].latencies...)
+	}
+	return result
+}
+
+func joinLatencies(flows [][]int64) []int64 {
+	result := make([]int64, 0)
+	for _, values := range flows {
+		result = append(result, values...)
+	}
+	return result
 }
 
 func build(packet []byte, value header) {
