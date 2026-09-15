@@ -4,11 +4,13 @@ package metrics
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type ProcessSnapshot struct {
@@ -144,14 +146,51 @@ func ProcessDelta(before, after ProcessSnapshot) (ProcessSnapshot, error) {
 	if after.UserTicks < before.UserTicks || after.SystemTicks < before.SystemTicks || after.RunNanoseconds < before.RunNanoseconds || after.ReadBytes < before.ReadBytes || after.WriteBytes < before.WriteBytes || after.MinorFaults < before.MinorFaults || after.MajorFaults < before.MajorFaults || after.VoluntarySwitches < before.VoluntarySwitches || after.InvoluntarySwitches < before.InvoluntarySwitches {
 		return ProcessSnapshot{}, errors.New("process counters moved backwards")
 	}
-	return ProcessSnapshot{
+	result := ProcessSnapshot{
 		UserTicks: after.UserTicks - before.UserTicks, SystemTicks: after.SystemTicks - before.SystemTicks, RunNanoseconds: after.RunNanoseconds - before.RunNanoseconds,
 		ReadBytes: after.ReadBytes - before.ReadBytes, WriteBytes: after.WriteBytes - before.WriteBytes,
 		MinorFaults: after.MinorFaults - before.MinorFaults, MajorFaults: after.MajorFaults - before.MajorFaults,
 		VoluntarySwitches: after.VoluntarySwitches - before.VoluntarySwitches, InvoluntarySwitches: after.InvoluntarySwitches - before.InvoluntarySwitches,
 		RSSBytes: after.RSSBytes, PSSBytes: after.PSSBytes, USSBytes: after.USSBytes, HighWaterRSSBytes: after.HighWaterRSSBytes,
 		SwapBytes: after.SwapBytes, Threads: after.Threads, FileDescriptors: after.FileDescriptors, SocketFileDescriptors: after.SocketFileDescriptors,
-	}, nil
+	}
+	if result.RunNanoseconds == 0 {
+		ticks := result.UserTicks + result.SystemTicks
+		result.RunNanoseconds = ticks * 1_000_000_000 / clockTicksPerSecond()
+	}
+	return result, nil
+}
+
+var (
+	clockTicksOnce sync.Once
+	clockTicks     uint64 = 100
+)
+
+// Linux publishes _SC_CLK_TCK as AT_CLKTCK in the process auxiliary vector.
+// This avoids cgo/getconf and keeps Android builds self-contained.
+func clockTicksPerSecond() uint64 {
+	clockTicksOnce.Do(func() {
+		content, err := os.ReadFile("/proc/self/auxv")
+		if err != nil {
+			return
+		}
+		wordSize := strconv.IntSize / 8
+		for offset := 0; offset+2*wordSize <= len(content); offset += 2 * wordSize {
+			var key, value uint64
+			if wordSize == 8 {
+				key = binary.NativeEndian.Uint64(content[offset:])
+				value = binary.NativeEndian.Uint64(content[offset+wordSize:])
+			} else {
+				key = uint64(binary.NativeEndian.Uint32(content[offset:]))
+				value = uint64(binary.NativeEndian.Uint32(content[offset+wordSize:]))
+			}
+			if key == 17 && value > 0 {
+				clockTicks = value
+				return
+			}
+		}
+	})
+	return clockTicks
 }
 
 func readKeyValues(path string, consume func(string, string)) error {
