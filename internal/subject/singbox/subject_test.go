@@ -111,3 +111,32 @@ func TestManagedEBPFDryRunLifecycle(t *testing.T) {
 		t.Fatalf("runs=%v", commands.runs)
 	}
 }
+
+func TestManagedCreatesAndRemovesOnlyItsWorkerCgroup(t *testing.T) {
+	root := t.TempDir()
+	cgroupPath := root + "/worker"
+	config := protocol.Config{
+		RunID:     "cgroup-owner",
+		Subject:   protocol.SubjectConfig{Kind: protocol.SubjectEBPFCgroup, CgroupPath: cgroupPath, APIListen: "127.0.0.1:9090"},
+		Execution: protocol.ExecutionConfig{TemporaryDirectory: t.TempDir()},
+	}
+	managed := New(config, &fakeRunner{})
+	if err := managed.Snapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := managed.Setup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cgroupPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := managed.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatal("cleanup removed the parent cgroup")
+	}
+	if err := managed.VerifyRestore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

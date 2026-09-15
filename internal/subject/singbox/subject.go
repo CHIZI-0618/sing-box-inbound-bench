@@ -43,6 +43,7 @@ type Managed struct {
 	kernelProbe  json.RawMessage
 	httpClient   *http.Client
 	netfilter    *netfilter.Manager
+	cgroupOwned  bool
 }
 
 func New(config protocol.Config, runner CommandRunner) *Managed {
@@ -105,12 +106,10 @@ func (m *Managed) Preflight(ctx context.Context) error {
 		}
 	}
 	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
-		inside, membershipErr := cgroup.ContainsPID(m.Config.Subject.CgroupPath, os.Getpid())
-		if membershipErr != nil {
-			return fmt.Errorf("verify controller cgroup isolation: %w", membershipErr)
-		}
-		if inside {
-			return errors.New("controller is already inside the benchmark worker cgroup")
+		if _, statErr := os.Stat(m.Config.Subject.CgroupPath); statErr == nil {
+			return errors.New("benchmark worker cgroup already exists; refusing to adopt an unowned cgroup")
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect benchmark worker cgroup: %w", statErr)
 		}
 	}
 	_, err = GenerateConfig(m.Config)
@@ -185,6 +184,12 @@ func (m *Managed) Setup(context.Context) error {
 	}
 	if err := os.Mkdir(m.runDirectory, 0o700); err != nil {
 		return err
+	}
+	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
+		if err := os.Mkdir(m.Config.Subject.CgroupPath, 0o755); err != nil {
+			return fmt.Errorf("create benchmark worker cgroup: %w", err)
+		}
+		m.cgroupOwned = true
 	}
 	content, err := GenerateConfig(m.Config)
 	if err != nil {
@@ -649,6 +654,13 @@ func (m *Managed) Cleanup(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	if m.cgroupOwned {
+		if err := os.Remove(m.Config.Subject.CgroupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove benchmark worker cgroup: %w", err))
+		} else {
+			m.cgroupOwned = false
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -664,6 +676,13 @@ func (m *Managed) VerifyRestore(ctx context.Context) error {
 	if m.runDirectory != "" {
 		if _, err := os.Stat(m.runDirectory); err == nil {
 			return errors.New("run directory remains after cleanup")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
+		if _, err := os.Stat(m.Config.Subject.CgroupPath); err == nil {
+			return errors.New("benchmark worker cgroup remains after cleanup")
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
