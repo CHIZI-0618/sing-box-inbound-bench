@@ -133,10 +133,11 @@ func (m *Manager) Snapshot(ctx context.Context) error {
 			return fmt.Errorf("policy rule priority %d is already in use", m.config.RulePriority)
 		}
 		output, err = m.run(ctx, m.config.IPBinary, m.familyFlag, "route", "show", "table", strconv.Itoa(m.config.RouteTable))
-		if err != nil {
+		missingTable := err != nil && strings.Contains(strings.ToLower(string(output)), "does not exist")
+		if err != nil && !missingTable {
 			return fmt.Errorf("inspect route table: %w", err)
 		}
-		if strings.TrimSpace(string(output)) != "" {
+		if !missingTable && strings.TrimSpace(string(output)) != "" {
 			return fmt.Errorf("route table %d is already in use", m.config.RouteTable)
 		}
 	}

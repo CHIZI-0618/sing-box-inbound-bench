@@ -1,0 +1,45 @@
+name: Benchmark result
+description: Submit a reproducible transparent inbound benchmark result
+title: "[result] "
+labels: [benchmark-result]
+body:
+  - type: checkboxes
+    attributes:
+      label: Protocol compliance
+      options:
+        - label: I used the same sing-box binary for every non-raw subject.
+          required: true
+        - label: Every included repetition has a valid path proof and restore verification.
+          required: true
+        - label: I did not edit or discard invalid repetitions.
+          required: true
+  - type: input
+    attributes:
+      label: Repository commit
+      description: Full sing-box-inbound-bench commit SHA
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: sing-box commit
+      description: Full sing-box commit SHA used to build the tested binary
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Device and topology
+      description: Device, kernel, OS, server, physical link, MTU, Android build and power state
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Artifacts
+      description: Link to the complete unmodified matrix directory, including state, manifests, repetitions, audits and summaries
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Deviations and warnings
+      description: List every deviation from the documented protocol and every summary warning
+    validations:
+      required: true

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - run: go test ./...
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: |
+          test -z "$(gofmt -l .)"
+          git diff --check
+      - name: Validate JSON syntax
+        run: find configs schema -name '*.json' -print0 | xargs -0 -n1 python3 -m json.tool >/dev/null
+      - name: Cross-build Android and Windows
+        run: |
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -o build/inbound-bench-android-arm64 ./cmd/inbound-bench
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o build/inbound-bench-windows-amd64.exe ./cmd/inbound-bench
+
+  network-namespace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+      - name: Install netfilter test tools
+        run: sudo apt-get update && sudo apt-get install -y iproute2 iptables util-linux
+      - name: Test REDIRECT and TPROXY in an isolated namespace
+        run: ./scripts/test-netns.sh

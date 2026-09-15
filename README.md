@@ -551,7 +551,19 @@ Preflight -> Snapshot -> Setup -> Start -> ProvePath -> Measure -> Stop -> Colle
 6. ~~实现 Android ADB runner。~~ USB NCM/RNDIS 点对点拓扑保持显式人工准备，避免工具
    擅自改变设备全局 USB 与联网状态。
 7. ~~实现随机化重复、断点续跑、事务回滚和自动脱敏矩阵。~~
-8. 最后添加 CI；CI 只负责构建、单元测试、namespace 功能测试和 cleanup 验证，不把
+8. ~~添加 CI。~~ CI 只负责构建、单元测试、namespace 功能测试和 cleanup 验证，不把
    共享云 runner 的性能结果发布为正式排名。
 
 在所有 adapters 和指标口径稳定之前，不发布性能排行榜。
+
+## 15. 自动验证边界
+
+GitHub Actions 在 Ubuntu 上执行单元测试、race、vet、gofmt、JSON 语法检查，以及
+Android arm64/Windows amd64 交叉构建。单独的 root network namespace job 会实际安装
+run-scoped 规则，验证 TCP REDIRECT、TCP TPROXY 和 UDP TPROXY 的包确实进入目标 listener，
+专属 chain counters 增长，并在结束后确认 chain 不存在。测试预先编译为单个二进制再进入
+无网络 namespace，避免 namespace 内下载依赖。
+
+这些 CI 结果只证明控制面语义和内核功能链路，不构成性能数据，也不能替代 Android GKI、
+厂商内核、OpenWrt 或真实 LAN/USB 的设备测试。第三方结果应通过 issue 模板提交完整目录，
+不得只贴汇总表。

@@ -15,6 +15,15 @@ type fakeRunner struct {
 	counters uint64
 }
 
+type missingRouteTableRunner struct{ fakeRunner }
+
+func (r *missingRouteTableRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if strings.Contains(strings.Join(args, " "), " route show table ") {
+		return []byte("Error: ipv4: FIB table does not exist."), errors.New("exit 2")
+	}
+	return r.fakeRunner.Run(ctx, name, args...)
+}
+
 func (r *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.commands = append(r.commands, command{Name: name, Args: append([]string(nil), args...)})
 	if r.failAt > 0 && len(r.commands) == r.failAt {
@@ -130,6 +139,17 @@ func TestSnapshotRejectsExistingChain(t *testing.T) {
 	}
 	if err = manager.Snapshot(context.Background()); err == nil {
 		t.Fatal("accepted existing chain")
+	}
+}
+
+func TestSnapshotAcceptsAnAbsentRouteTable(t *testing.T) {
+	runner := &missingRouteTableRunner{}
+	manager, err := New(testConfig(TProxy), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.Snapshot(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
