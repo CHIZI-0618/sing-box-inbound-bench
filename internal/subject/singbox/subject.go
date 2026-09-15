@@ -121,8 +121,13 @@ func (m *Managed) Preflight(ctx context.Context) error {
 		if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
 			plane = "cgroup"
 		}
+		target, parseErr := netip.ParseAddrPort(m.Config.Workload.Target)
+		if parseErr != nil {
+			return parseErr
+		}
 		output, probeErr := m.Runner.Run(ctx, m.Config.Subject.SingBoxBinary,
-			"tools", "ebpf", "status", "--local-data-plane", plane, "--network", "tcp,udp", "--ipv6=false", "--json")
+			"tools", "ebpf", "status", "--local-data-plane", plane, "--network", string(m.Config.Workload.Protocol),
+			fmt.Sprintf("--ipv6=%t", target.Addr().Is6()), "--json")
 		if probeErr != nil {
 			return fmt.Errorf("eBPF capability probe: %w: %s", probeErr, strings.TrimSpace(string(output)))
 		}

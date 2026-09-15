@@ -10,7 +10,7 @@ import (
 func TestGenerateEBPFConfigs(t *testing.T) {
 	for _, kind := range []protocol.SubjectKind{protocol.SubjectEBPFTC, protocol.SubjectEBPFCgroup} {
 		t.Run(string(kind), func(t *testing.T) {
-			config := protocol.Config{Subject: protocol.SubjectConfig{Kind: kind, IncludeUID: []uint32{2000}, APIListen: "127.0.0.1:9090", CgroupPath: "/sys/fs/cgroup/bench"}}
+			config := protocol.Config{Subject: protocol.SubjectConfig{Kind: kind, IncludeUID: []uint32{2000}, APIListen: "127.0.0.1:9090", CgroupPath: "/sys/fs/cgroup/bench"}, Workload: protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP, Target: "192.0.2.1:9000"}}
 			content, err := GenerateConfig(config)
 			if err != nil {
 				t.Fatal(err)
@@ -28,6 +28,10 @@ func TestGenerateEBPFConfigs(t *testing.T) {
 			if local["data_plane"] != wantPlane || local["bypass_private_address"] != false || local["dns_mode"] != "off" {
 				t.Fatalf("local=%v", local)
 			}
+			network := inbound["network"].([]any)
+			if len(network) != 1 || network[0] != "tcp" {
+				t.Fatalf("network=%v", network)
+			}
 			if kind == protocol.SubjectEBPFTC {
 				if _, exists := local["cgroup_path"]; exists {
 					t.Fatal("TC config contains cgroup_path")
@@ -38,7 +42,7 @@ func TestGenerateEBPFConfigs(t *testing.T) {
 }
 
 func TestGenerateDirectConfig(t *testing.T) {
-	config := protocol.Config{Subject: protocol.SubjectConfig{Kind: protocol.SubjectDirect, Listen: "127.0.0.1:18080", Target: "192.0.2.1:9000"}}
+	config := protocol.Config{Subject: protocol.SubjectConfig{Kind: protocol.SubjectDirect, Listen: "127.0.0.1:18080", Target: "192.0.2.1:9000"}, Workload: protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP}}
 	content, err := GenerateConfig(config)
 	if err != nil {
 		t.Fatal(err)
@@ -101,5 +105,24 @@ func TestGenerateTunConfigs(t *testing.T) {
 				t.Fatalf("routes=%v", routes)
 			}
 		})
+	}
+}
+
+func TestGenerateEBPFIPv6Config(t *testing.T) {
+	config := protocol.Config{
+		Subject:  protocol.SubjectConfig{Kind: protocol.SubjectEBPFTC, APIListen: "[::1]:9090"},
+		Workload: protocol.WorkloadConfig{Protocol: protocol.ProtocolUDP, Target: "[2001:db8::1]:9000"},
+	}
+	content, err := GenerateConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err = json.Unmarshal(content, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	local := decoded["inbounds"].([]any)[0].(map[string]any)["local"].(map[string]any)
+	if local["ipv6"] != true {
+		t.Fatalf("local=%v", local)
 	}
 }

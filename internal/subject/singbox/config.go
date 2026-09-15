@@ -38,7 +38,7 @@ func GenerateConfig(config protocol.Config) ([]byte, error) {
 		}
 		generated.Inbounds = []any{map[string]any{
 			"type": "direct", "tag": "benchmark-direct-in", "listen": listenHost, "listen_port": listenPort,
-			"network": []string{"tcp", "udp"}, "udp_timeout": "5m", "override_address": targetHost, "override_port": targetPort,
+			"network": []string{string(config.Workload.Protocol)}, "udp_timeout": "5m", "override_address": targetHost, "override_port": targetPort,
 		}}
 	case protocol.SubjectRedirect, protocol.SubjectTProxy:
 		listenHost, listenPort, err := splitAddress(config.Subject.Listen)
@@ -80,19 +80,23 @@ func GenerateConfig(config protocol.Config) ([]byte, error) {
 			"udp_filtering": "endpoint_independent", "udp_nat_max": 1024,
 		}}
 	case protocol.SubjectEBPFTC, protocol.SubjectEBPFCgroup:
+		target, err := netip.ParseAddrPort(config.Workload.Target)
+		if err != nil {
+			return nil, fmt.Errorf("workload target: %w", err)
+		}
 		plane := "tc"
 		if config.Subject.Kind == protocol.SubjectEBPFCgroup {
 			plane = "cgroup"
 		}
 		local := map[string]any{
-			"enabled": true, "data_plane": plane, "dns_mode": "off", "ipv6": false,
+			"enabled": true, "data_plane": plane, "dns_mode": "off", "ipv6": target.Addr().Is6(),
 			"bypass_private_address": false, "include_uid": config.Subject.IncludeUID,
 		}
 		if plane == "cgroup" && config.Subject.CgroupPath != "" {
 			local["cgroup_path"] = config.Subject.CgroupPath
 		}
 		generated.Inbounds = []any{map[string]any{
-			"type": "ebpf", "tag": "benchmark-ebpf-in", "network": []string{"tcp", "udp"}, "udp_timeout": "5m",
+			"type": "ebpf", "tag": "benchmark-ebpf-in", "network": []string{string(config.Workload.Protocol)}, "udp_timeout": "5m",
 			"local": local, "shared": map[string]any{"enabled": false},
 		}}
 		if config.Subject.APIListen == "" {

@@ -88,6 +88,7 @@ func TestManagedEBPFDryRunLifecycle(t *testing.T) {
 			APIListen: strings.TrimPrefix(api.URL, "http://"), APIToken: "secret",
 		},
 		Execution: protocol.ExecutionConfig{TemporaryDirectory: t.TempDir(), StartupTimeoutMS: 1000},
+		Workload:  protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP, Target: "192.0.2.1:9000"},
 	}
 	commands := &fakeRunner{}
 	managed := New(config, commands)
@@ -119,6 +120,7 @@ func TestManagedCreatesAndRemovesOnlyItsWorkerCgroup(t *testing.T) {
 		RunID:     "cgroup-owner",
 		Subject:   protocol.SubjectConfig{Kind: protocol.SubjectEBPFCgroup, CgroupPath: cgroupPath, APIListen: "127.0.0.1:9090"},
 		Execution: protocol.ExecutionConfig{TemporaryDirectory: t.TempDir()},
+		Workload:  protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP, Target: "192.0.2.1:9000"},
 	}
 	managed := New(config, &fakeRunner{})
 	if err := managed.Snapshot(context.Background()); err != nil {
