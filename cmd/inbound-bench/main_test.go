@@ -72,3 +72,20 @@ func TestBuildMatrixStateRandomizesByBlockAndWrapsRawControls(t *testing.T) {
 		}
 	}
 }
+
+func TestMatrixRecoveryRequestUsesRawPhysicalTarget(t *testing.T) {
+	uid := uint32(2000)
+	request := matrixRecoveryRequest(protocol.Config{
+		Workload:  protocol.WorkloadConfig{Target: "192.0.2.2:19090"},
+		Execution: protocol.ExecutionConfig{WorkerUID: &uid},
+	})
+	if request.RunID != "matrix-recovery" || request.Workload.Protocol != protocol.ProtocolUDP || request.Workload.Mode != protocol.ModeEcho {
+		t.Fatalf("request=%+v", request)
+	}
+	if request.Workload.Target != "192.0.2.2:19090" || request.Workload.Requests != 8 || request.Workload.TimeoutMS != 500 {
+		t.Fatalf("workload=%+v", request.Workload)
+	}
+	if request.WorkerUID == nil || *request.WorkerUID != uid || request.CollectProof {
+		t.Fatalf("request=%+v", request)
+	}
+}

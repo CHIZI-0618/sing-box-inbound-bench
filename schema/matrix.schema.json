@@ -10,6 +10,7 @@
     "matrix_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
     "seed": { "type": "integer" },
     "output_directory": { "type": "string", "minLength": 1 },
+    "cooldown_ms": { "type": "integer", "minimum": 0 },
     "resume": { "type": "boolean" },
     "raw_control": {
       "allOf": [

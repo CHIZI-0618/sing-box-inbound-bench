@@ -88,6 +88,7 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
   --target 192.168.254.2:19090 \
   --interface rndis0 \
   --worker-uid 2000 \
+  --cooldown-ms 1000 \
   --udp-pps 100000
 ```
 
@@ -102,6 +103,12 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
 1 次额外 warmup repetition 加 5 次正式重复，`core` 为 1+3，`smoke` 为 0+1；这里的 0
 不取消每轮必须执行的路径证明预热。每个 block 前后仍执行 raw control。自定义参数只
 覆盖对应 preset 默认值，不可将不同预设或时长的结果混合统计。
+
+生成器默认在相邻 job 间冷却 1 秒。UDP PPS job 结束后还会用 `raw_control` 的物理目标
+执行最多 5 次、每次 8 包的低速 UDP 恢复探测；只有 8/8 返回才继续下一个随机 case。
+探测不计入被测结果，但其次数、计数与错误会写入 `state.json`。持续过载后网络未恢复时
+矩阵会保留部分结果并停止，避免把队列残留误记成后续入站的失败。`--cooldown-ms` 可按
+拓扑调整；它不能替代先用 raw pilot 选取可持续 offered load。
 
 Android 主机侧执行：
 

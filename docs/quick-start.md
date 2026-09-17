@@ -40,6 +40,7 @@ tuple. Confirm the raw baseline first.
   --target 192.168.254.2:19090 \
   --interface eth0 \
   --worker-uid 2000 \
+  --cooldown-ms 1000 \
   --udp-pps 100000
 ```
 
@@ -49,6 +50,13 @@ use `full` (168) only for the publishable run. `--subjects raw,ebpf-tc,ebpf-cgro
 Run a raw-only pilot before choosing `--udp-pps`. Generate separate 25%, 50% and 75% offered-load
 matrices when comparing efficiency. Never silently edit a matrix after a run starts; resume rejects
 configuration drift.
+
+Generated matrices wait one second between jobs by default. After every UDP PPS job, the runner also
+probes the raw physical target with eight low-rate UDP echoes and retries up to five times before it
+allows the next randomized case to start. Recovery evidence is stored in `state.json`; exhausting the
+probe stops the matrix with partial results instead of attributing stale queue pressure to the next
+subject. Tune `--cooldown-ms` for the topology, but do not use cooldown to disguise an offered load
+that already overloads the raw baseline.
 
 The generator gives every non-raw subject the same loopback sing-box API service so its idle memory
 and CPU cost is not charged only to eBPF. It invokes `sing-box api ebpf` only for eBPF subjects and

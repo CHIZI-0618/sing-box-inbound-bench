@@ -20,7 +20,20 @@
           "subject": { "enum": ["raw", "direct", "redirect", "tproxy", "tun", "tun-auto-redirect", "ebpf-tc", "ebpf-cgroup"] },
           "block": { "type": "integer", "minimum": 0 }, "warmup": { "type": "boolean" },
           "control": { "enum": ["before", "after"] }, "result": { "type": "string" },
-          "complete": { "type": "boolean" }, "valid": { "type": "boolean" }, "error": { "type": "string" }
+          "complete": { "type": "boolean" }, "valid": { "type": "boolean" }, "error": { "type": "string" },
+          "recovery": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["started_at", "finished_at", "attempts", "valid", "counters"],
+            "properties": {
+              "started_at": { "type": "string", "format": "date-time" },
+              "finished_at": { "type": "string", "format": "date-time" },
+              "attempts": { "type": "integer", "minimum": 0 },
+              "valid": { "type": "boolean" },
+              "counters": { "$ref": "result.schema.json#/properties/counters" },
+              "error": { "type": "string" }
+            }
+          }
         }
       }
     }

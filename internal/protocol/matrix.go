@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type MatrixConfig struct {
@@ -14,6 +15,7 @@ type MatrixConfig struct {
 	MatrixID        string   `json:"matrix_id"`
 	Seed            int64    `json:"seed"`
 	OutputDirectory string   `json:"output_directory"`
+	CooldownMS      int64    `json:"cooldown_ms,omitempty"`
 	Resume          bool     `json:"resume,omitempty"`
 	RawControl      *Config  `json:"raw_control,omitempty"`
 	Cases           []Config `json:"cases"`
@@ -56,6 +58,9 @@ func NormalizeAndValidateMatrix(matrix *MatrixConfig) error {
 	} else if filepath.Clean(matrix.OutputDirectory) == string(filepath.Separator) {
 		errs = append(errs, errors.New("output_directory cannot be a filesystem root"))
 	}
+	if matrix.CooldownMS < 0 {
+		errs = append(errs, errors.New("cooldown_ms cannot be negative"))
+	}
 	if len(matrix.Cases) == 0 {
 		errs = append(errs, errors.New("at least one matrix case is required"))
 	}
@@ -82,16 +87,26 @@ func NormalizeAndValidateMatrix(matrix *MatrixConfig) error {
 }
 
 type MatrixJob struct {
-	ID       string      `json:"id"`
-	CaseID   string      `json:"case_id"`
-	Subject  SubjectKind `json:"subject"`
-	Block    int         `json:"block"`
-	Warmup   bool        `json:"warmup"`
-	Control  string      `json:"control,omitempty"`
-	Result   string      `json:"result"`
-	Complete bool        `json:"complete"`
-	Valid    bool        `json:"valid"`
-	Error    string      `json:"error,omitempty"`
+	ID       string          `json:"id"`
+	CaseID   string          `json:"case_id"`
+	Subject  SubjectKind     `json:"subject"`
+	Block    int             `json:"block"`
+	Warmup   bool            `json:"warmup"`
+	Control  string          `json:"control,omitempty"`
+	Result   string          `json:"result"`
+	Complete bool            `json:"complete"`
+	Valid    bool            `json:"valid"`
+	Error    string          `json:"error,omitempty"`
+	Recovery *MatrixRecovery `json:"recovery,omitempty"`
+}
+
+type MatrixRecovery struct {
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Attempts   int       `json:"attempts"`
+	Valid      bool      `json:"valid"`
+	Counters   Counters  `json:"counters"`
+	Error      string    `json:"error,omitempty"`
 }
 
 type MatrixState struct {

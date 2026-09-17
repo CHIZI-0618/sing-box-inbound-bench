@@ -103,6 +103,7 @@ func run(arguments []string) error {
 		duration := flags.Int64("duration-ms", 0, "bulk and UDP PPS duration (0 uses preset default)")
 		idleDuration := flags.Int64("idle-duration-ms", 0, "idle TCP residence duration (0 uses preset default)")
 		udpPPS := flags.Int("udp-pps", 0, "total offered UDP packets per second (0 uses preset default)")
+		cooldown := flags.Int64("cooldown-ms", 1_000, "delay between matrix jobs; UDP PPS jobs also require a raw health probe")
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return err
 		}
@@ -113,7 +114,7 @@ func run(arguments []string) error {
 			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target, RawTarget: *rawTarget,
 			OutboundInterface: *outboundInterface, WorkerUID: uint32(*workerUID), Seed: *seed,
 			WarmupRepetitions: *warmups, Repetitions: *repetitions, Duration: *duration,
-			IdleDuration: *idleDuration, UDPPPS: *udpPPS, Preset: *preset,
+			IdleDuration: *idleDuration, UDPPPS: *udpPPS, CooldownMS: *cooldown, Preset: *preset,
 			Subjects: parseSubjectList(*subjects), Workloads: splitCommaList(*workloads),
 		})
 		if err != nil {
@@ -408,11 +409,28 @@ func runMatrix(configPath string) error {
 			job.Error = executeErr.Error()
 			runErrors = append(runErrors, fmt.Errorf("%s: %w", job.ID, executeErr))
 		}
+		if job.Control == "" {
+			if cooldownErr := waitContext(runContext, time.Duration(matrix.CooldownMS)*time.Millisecond); cooldownErr != nil {
+				job.Error = errors.Join(executeErr, cooldownErr).Error()
+				runErrors = append(runErrors, fmt.Errorf("%s cooldown: %w", job.ID, cooldownErr))
+			}
+		}
+		if runContext.Err() == nil && job.Control == "" && config.Workload.Mode == protocol.ModePPS && matrix.RawControl != nil {
+			var recoveryErr error
+			job.Recovery, recoveryErr = runMatrixRecoveryProbe(runContext, matrix)
+			if recoveryErr != nil {
+				job.Error = errors.Join(executeErr, recoveryErr).Error()
+				runErrors = append(runErrors, fmt.Errorf("%s recovery: %w", job.ID, recoveryErr))
+			}
+		}
 		if err = protocol.WriteJSON(filepath.Join(root, "state.json"), state); err != nil {
 			return errors.Join(errors.Join(runErrors...), err)
 		}
 		if runContext.Err() != nil {
 			return errors.Join(errors.Join(runErrors...), runContext.Err())
+		}
+		if job.Recovery != nil && !job.Recovery.Valid {
+			return errors.Join(runErrors...)
 		}
 	}
 	if err = protocol.WriteJSON(filepath.Join(root, "state.json"), state); err != nil {
@@ -422,6 +440,67 @@ func runMatrix(configPath string) error {
 		runErrors = append(runErrors, err)
 	}
 	return errors.Join(runErrors...)
+}
+
+const (
+	matrixRecoveryAttempts = 5
+	matrixRecoveryInterval = time.Second
+	matrixRecoveryTimeout  = 6 * time.Second
+)
+
+func runMatrixRecoveryProbe(ctx context.Context, matrix protocol.MatrixConfig) (*protocol.MatrixRecovery, error) {
+	recovery := &protocol.MatrixRecovery{StartedAt: time.Now()}
+	defer func() { recovery.FinishedAt = time.Now() }()
+	request := matrixRecoveryRequest(*matrix.RawControl)
+	var lastErr error
+	for attempt := 1; attempt <= matrixRecoveryAttempts; attempt++ {
+		recovery.Attempts = attempt
+		attemptContext, cancel := context.WithTimeout(ctx, matrixRecoveryTimeout)
+		result, probeErr := worker.RunProcess(attemptContext, "", worker.TemporaryRoot(matrix.RawControl.Execution.TemporaryDirectory), request, worker.ProcessHooks{})
+		cancel()
+		recovery.Counters = result.Workload.Counters
+		counters := result.Workload.Counters
+		if probeErr == nil && counters.Operations == 8 && counters.Failed == 0 && counters.Lost == 0 && counters.Corrupt == 0 {
+			recovery.Valid = true
+			recovery.Error = ""
+			return recovery, nil
+		}
+		lastErr = errors.Join(probeErr, fmt.Errorf("raw UDP health probe received %d/8 operations (failed=%d lost=%d corrupt=%d)", counters.Operations, counters.Failed, counters.Lost, counters.Corrupt))
+		if attempt < matrixRecoveryAttempts {
+			if waitErr := waitContext(ctx, matrixRecoveryInterval); waitErr != nil {
+				lastErr = errors.Join(lastErr, waitErr)
+				break
+			}
+		}
+	}
+	recovery.Error = lastErr.Error()
+	return recovery, fmt.Errorf("network did not recover after UDP PPS workload: %w", lastErr)
+}
+
+func matrixRecoveryRequest(rawControl protocol.Config) worker.Request {
+	return worker.Request{
+		ProtocolVersion: protocol.Version,
+		RunID:           "matrix-recovery",
+		Workload: protocol.WorkloadConfig{
+			Protocol: protocol.ProtocolUDP, Mode: protocol.ModeEcho, Target: rawControl.Workload.Target,
+			PayloadBytes: 64, Requests: 8, Connections: 1, Flows: 1, TimeoutMS: 500,
+		},
+		WorkerUID: rawControl.Execution.WorkerUID,
+	}
+}
+
+func waitContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func buildMatrixState(root string, matrix protocol.MatrixConfig) protocol.MatrixState {
