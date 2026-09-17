@@ -91,6 +91,11 @@ func TestRunDeviceRestoresProductionServiceAfterMatrixFailure(t *testing.T) {
 	if !containsCall(executor.calls, "shell /manager stop") || !containsCall(executor.calls, "shell /manager start") {
 		t.Fatalf("calls=%v", executor.calls)
 	}
+	cleanupIndex := findCallContaining(executor.calls, "inbound-bench-cleanup")
+	startIndex := findCall(executor.calls, "shell /manager start")
+	if cleanupIndex < 0 || startIndex < 0 || cleanupIndex > startIndex {
+		t.Fatalf("benchmark cleanup must run before production restore: calls=%v", executor.calls)
+	}
 }
 
 func TestRewriteMatrixForDeviceUsesOwnedPaths(t *testing.T) {
@@ -166,4 +171,12 @@ func TestServiceStateAcceptsExplicitStoppedStatusWithExitOne(t *testing.T) {
 
 func containsCall(calls [][]string, want string) bool {
 	return slices.ContainsFunc(calls, func(call []string) bool { return strings.Join(call, " ") == want })
+}
+
+func findCall(calls [][]string, want string) int {
+	return slices.IndexFunc(calls, func(call []string) bool { return strings.Join(call, " ") == want })
+}
+
+func findCallContaining(calls [][]string, want string) int {
+	return slices.IndexFunc(calls, func(call []string) bool { return strings.Contains(strings.Join(call, " "), want) })
 }

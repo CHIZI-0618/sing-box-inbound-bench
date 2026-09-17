@@ -141,6 +141,9 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 	defer func() {
 		restoreContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 		defer cancel()
+		if cleanupErr := adb.cleanupOwnedProcesses(restoreContext, remoteDirectory); cleanupErr != nil {
+			returnErr = errors.Join(returnErr, cleanupErr)
+		}
 		benchmarkAfter := adb.snapshot(restoreContext)
 		if writeErr := protocol.WriteJSON(filepath.Join(result.AuditDirectory, "android-benchmark-after.json"), benchmarkAfter); writeErr != nil {
 			returnErr = errors.Join(returnErr, writeErr)
@@ -236,6 +239,16 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 		return result, fmt.Errorf("remote matrix completed with invalid jobs; partial results were pulled: %w", matrixErr)
 	}
 	return result, nil
+}
+
+func (e *deviceExecutor) cleanupOwnedProcesses(ctx context.Context, remoteDirectory string) error {
+	remoteBench := path.Join(remoteDirectory, "inbound-bench")
+	remoteSingBox := path.Join(remoteDirectory, "sing-box")
+	const script = `find_owned() { for process in /proc/[0-9]*; do executable=$(readlink "$process/exe" 2>/dev/null) || continue; case "$executable" in "$1"|"$2") printf '%s\n' "${process#/proc/}";; esac; done; }; pids=$(find_owned "$1" "$2"); [ -z "$pids" ] || kill -TERM $pids 2>/dev/null; attempt=0; while [ "$attempt" -lt 5 ]; do pids=$(find_owned "$1" "$2"); [ -z "$pids" ] && exit 0; sleep 1; attempt=$((attempt + 1)); done; pids=$(find_owned "$1" "$2"); [ -z "$pids" ] || kill -KILL $pids 2>/dev/null; sleep 1; [ -z "$(find_owned "$1" "$2")" ]`
+	if _, err := e.shell(ctx, "sh", "-c", script, "inbound-bench-cleanup", remoteBench, remoteSingBox); err != nil {
+		return fmt.Errorf("stop benchmark-owned Android processes: %w", err)
+	}
+	return nil
 }
 
 type deviceExecutor struct {
