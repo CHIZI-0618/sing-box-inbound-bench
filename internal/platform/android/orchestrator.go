@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,16 +27,25 @@ type ServiceConfig struct {
 }
 
 type DeviceConfig struct {
-	ProtocolVersion      string         `json:"protocol_version"`
-	Serial               string         `json:"serial,omitempty"`
-	ADB                  string         `json:"adb,omitempty"`
-	RemoteRoot           string         `json:"remote_root"`
-	BenchmarkBinary      string         `json:"benchmark_binary"`
-	SingBoxBinary        string         `json:"sing_box_binary"`
-	MatrixConfig         string         `json:"matrix_config"`
-	LocalOutputDirectory string         `json:"local_output_directory"`
-	KeepRemote           bool           `json:"keep_remote,omitempty"`
-	Service              *ServiceConfig `json:"service,omitempty"`
+	ProtocolVersion      string                   `json:"protocol_version"`
+	Serial               string                   `json:"serial,omitempty"`
+	ADB                  string                   `json:"adb,omitempty"`
+	RemoteRoot           string                   `json:"remote_root"`
+	BenchmarkBinary      string                   `json:"benchmark_binary"`
+	SingBoxBinary        string                   `json:"sing_box_binary"`
+	MatrixConfig         string                   `json:"matrix_config"`
+	LocalOutputDirectory string                   `json:"local_output_directory"`
+	KeepRemote           bool                     `json:"keep_remote,omitempty"`
+	Service              *ServiceConfig           `json:"service,omitempty"`
+	TargetTranslation    *TargetTranslationConfig `json:"target_translation,omitempty"`
+}
+
+type TargetTranslationConfig struct {
+	VirtualTarget  string `json:"virtual_target"`
+	PhysicalTarget string `json:"physical_target"`
+	DirectMark     uint32 `json:"direct_mark"`
+	DirectMarkMask uint32 `json:"direct_mark_mask"`
+	FirewallBinary string `json:"firewall_binary,omitempty"`
 }
 
 type CommandResult struct {
@@ -94,6 +104,18 @@ func ReadDeviceConfig(filePath string) (DeviceConfig, error) {
 			}
 		}
 	}
+	if config.TargetTranslation != nil {
+		virtual, virtualErr := netip.ParseAddrPort(config.TargetTranslation.VirtualTarget)
+		physical, physicalErr := netip.ParseAddrPort(config.TargetTranslation.PhysicalTarget)
+		if virtualErr != nil || physicalErr != nil {
+			errs = append(errs, errors.Join(fmt.Errorf("virtual translation target: %w", virtualErr), fmt.Errorf("physical translation target: %w", physicalErr)))
+		} else if !virtual.Addr().Is4() || !physical.Addr().Is4() {
+			errs = append(errs, errors.New("Android target translation currently requires IPv4 targets"))
+		}
+		if config.TargetTranslation.DirectMark == 0 || config.TargetTranslation.DirectMarkMask == 0 {
+			errs = append(errs, errors.New("target translation requires direct_mark and direct_mark_mask"))
+		}
+	}
 	return config, errors.Join(errs...)
 }
 
@@ -105,7 +127,17 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 	if err != nil {
 		return result, err
 	}
+	var translation *androidTargetTranslation
+	if config.TargetTranslation != nil {
+		translation, err = newAndroidTargetTranslation(matrix, *config.TargetTranslation)
+		if err != nil {
+			return result, err
+		}
+	}
 	ownedSnapshotState := snapshotOwnership(matrix)
+	if translation != nil {
+		ownedSnapshotState["iptables"] = append(ownedSnapshotState["iptables"], translation.chain)
+	}
 	remoteDirectory, err := RemoteRunDirectory(config.RemoteRoot, matrix.MatrixID)
 	if err != nil {
 		return result, err
@@ -144,6 +176,11 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 		if cleanupErr := adb.cleanupOwnedProcesses(restoreContext, remoteDirectory); cleanupErr != nil {
 			returnErr = errors.Join(returnErr, cleanupErr)
 		}
+		if translation != nil {
+			if cleanupErr := translation.Cleanup(restoreContext, adb); cleanupErr != nil {
+				returnErr = errors.Join(returnErr, cleanupErr)
+			}
+		}
 		benchmarkAfter := adb.snapshot(restoreContext)
 		if writeErr := protocol.WriteJSON(filepath.Join(result.AuditDirectory, "android-benchmark-after.json"), benchmarkAfter); writeErr != nil {
 			returnErr = errors.Join(returnErr, writeErr)
@@ -179,6 +216,11 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 		baseline := adb.snapshot(ctx)
 		stoppedBaseline = &baseline
 		if err = protocol.WriteJSON(filepath.Join(result.AuditDirectory, "android-benchmark-before.json"), baseline); err != nil {
+			return result, err
+		}
+	}
+	if translation != nil {
+		if err = translation.Install(ctx, adb); err != nil {
 			return result, err
 		}
 	}
@@ -241,14 +283,120 @@ func RunDevice(ctx context.Context, config DeviceConfig, executor Executor) (res
 	return result, nil
 }
 
+type androidTargetTranslation struct {
+	config       TargetTranslationConfig
+	virtual      netip.AddrPort
+	physical     netip.AddrPort
+	chain        string
+	chainCreated bool
+	jumpCreated  bool
+}
+
+func newAndroidTargetTranslation(matrix protocol.MatrixConfig, config TargetTranslationConfig) (*androidTargetTranslation, error) {
+	virtual, err := netip.ParseAddrPort(config.VirtualTarget)
+	if err != nil {
+		return nil, err
+	}
+	physical, err := netip.ParseAddrPort(config.PhysicalTarget)
+	if err != nil {
+		return nil, err
+	}
+	if !virtual.Addr().Is4() || !physical.Addr().Is4() {
+		return nil, errors.New("Android target translation currently requires IPv4 targets")
+	}
+	for _, benchmark := range matrix.Cases {
+		target := benchmark.Workload.Target
+		if benchmark.Subject.Kind == protocol.SubjectDirect {
+			target = benchmark.Subject.Target
+		}
+		want := config.VirtualTarget
+		if benchmark.Subject.Kind == protocol.SubjectRaw {
+			want = config.PhysicalTarget
+		}
+		if target != want {
+			return nil, fmt.Errorf("case %s target %s does not match translated topology target %s", benchmark.RunID, target, want)
+		}
+	}
+	if matrix.RawControl != nil && matrix.RawControl.Workload.Target != config.PhysicalTarget {
+		return nil, errors.New("raw control target does not match physical translation target")
+	}
+	if config.FirewallBinary == "" {
+		config.FirewallBinary = "iptables"
+	}
+	return &androidTargetTranslation{
+		config: config, virtual: virtual, physical: physical,
+		chain: fmt.Sprintf("SBI_X_%08X", crc32.ChecksumIEEE([]byte(matrix.MatrixID))),
+	}, nil
+}
+
+func (t *androidTargetTranslation) Install(ctx context.Context, adb *deviceExecutor) error {
+	run := func(arguments ...string) error {
+		_, err := adb.shell(ctx, append([]string{t.config.FirewallBinary, "-w", "-t", "nat"}, arguments...)...)
+		return err
+	}
+	if err := run("-N", t.chain); err != nil {
+		return fmt.Errorf("create Android target translation chain: %w", err)
+	}
+	t.chainCreated = true
+	virtualPrefix := t.virtual.Addr().String() + "/32"
+	mark := fmt.Sprintf("0x%x/0x%x", t.config.DirectMark, t.config.DirectMarkMask)
+	for _, network := range []string{"tcp", "udp"} {
+		base := []string{"-A", t.chain, "-d", virtualPrefix, "-p", network, "--dport", strconv.Itoa(int(t.virtual.Port()))}
+		if err := run(append(slices.Clone(base), "-m", "owner", "--uid-owner", "0", "-j", "DNAT", "--to-destination", t.physical.String())...); err != nil {
+			return errors.Join(fmt.Errorf("install root target translation: %w", err), t.Cleanup(context.WithoutCancel(ctx), adb))
+		}
+		if err := run(append(slices.Clone(base), "-m", "mark", "--mark", mark, "-j", "DNAT", "--to-destination", t.physical.String())...); err != nil {
+			return errors.Join(fmt.Errorf("install marked target translation: %w", err), t.Cleanup(context.WithoutCancel(ctx), adb))
+		}
+	}
+	if err := run("-I", "OUTPUT", "1", "-j", t.chain); err != nil {
+		return errors.Join(fmt.Errorf("activate Android target translation: %w", err), t.Cleanup(context.WithoutCancel(ctx), adb))
+	}
+	t.jumpCreated = true
+	return nil
+}
+
+func (t *androidTargetTranslation) Cleanup(ctx context.Context, adb *deviceExecutor) error {
+	if !t.chainCreated {
+		return nil
+	}
+	run := func(arguments ...string) error {
+		_, err := adb.shell(ctx, append([]string{t.config.FirewallBinary, "-w", "-t", "nat"}, arguments...)...)
+		return err
+	}
+	var errs []error
+	if t.jumpCreated {
+		if err := run("-D", "OUTPUT", "-j", t.chain); err != nil {
+			errs = append(errs, fmt.Errorf("remove Android target translation jump: %w", err))
+		} else {
+			t.jumpCreated = false
+		}
+	}
+	if !t.jumpCreated {
+		if err := run("-F", t.chain); err != nil {
+			errs = append(errs, fmt.Errorf("flush Android target translation chain: %w", err))
+		} else if err = run("-X", t.chain); err != nil {
+			errs = append(errs, fmt.Errorf("remove Android target translation chain: %w", err))
+		} else {
+			t.chainCreated = false
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (e *deviceExecutor) cleanupOwnedProcesses(ctx context.Context, remoteDirectory string) error {
 	remoteBench := path.Join(remoteDirectory, "inbound-bench")
 	remoteSingBox := path.Join(remoteDirectory, "sing-box")
 	const script = `find_owned() { for process in /proc/[0-9]*; do executable=$(readlink "$process/exe" 2>/dev/null) || continue; case "$executable" in "$1"|"$2") printf '%s\n' "${process#/proc/}";; esac; done; }; pids=$(find_owned "$1" "$2"); [ -z "$pids" ] || kill -TERM $pids 2>/dev/null; attempt=0; while [ "$attempt" -lt 5 ]; do pids=$(find_owned "$1" "$2"); [ -z "$pids" ] && exit 0; sleep 1; attempt=$((attempt + 1)); done; pids=$(find_owned "$1" "$2"); [ -z "$pids" ] || kill -KILL $pids 2>/dev/null; sleep 1; [ -z "$(find_owned "$1" "$2")" ]`
-	if _, err := e.shell(ctx, "sh", "-c", script, "inbound-bench-cleanup", remoteBench, remoteSingBox); err != nil {
+	command := "sh -c " + quoteShellArgument(script) + " inbound-bench-cleanup " + quoteShellArgument(remoteBench) + " " + quoteShellArgument(remoteSingBox)
+	if _, err := e.shell(ctx, command); err != nil {
 		return fmt.Errorf("stop benchmark-owned Android processes: %w", err)
 	}
 	return nil
+}
+
+func quoteShellArgument(argument string) string {
+	return "'" + strings.ReplaceAll(argument, "'", "'\\''") + "'"
 }
 
 type deviceExecutor struct {

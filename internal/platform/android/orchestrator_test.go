@@ -169,6 +169,74 @@ func TestServiceStateAcceptsExplicitStoppedStatusWithExitOne(t *testing.T) {
 	}
 }
 
+func TestQuoteShellArgumentPreservesCleanupScript(t *testing.T) {
+	quoted := quoteShellArgument(`printf '%s\n' "$1"`)
+	if quoted != `'printf '\''%s\n'\'' "$1"'` {
+		t.Fatalf("quoted=%s", quoted)
+	}
+}
+
+func TestAndroidTargetTranslationInstallAndCleanup(t *testing.T) {
+	matrix := protocol.MatrixConfig{
+		MatrixID:   "translated",
+		RawControl: &protocol.Config{Workload: protocol.WorkloadConfig{Target: "10.212.17.63:19090"}},
+		Cases: []protocol.Config{
+			{RunID: "raw", Subject: protocol.SubjectConfig{Kind: protocol.SubjectRaw}, Workload: protocol.WorkloadConfig{Target: "10.212.17.63:19090"}},
+			{RunID: "auto", Subject: protocol.SubjectConfig{Kind: protocol.SubjectTunAuto}, Workload: protocol.WorkloadConfig{Target: "198.18.0.1:19090"}},
+		},
+	}
+	translation, err := newAndroidTargetTranslation(matrix, TargetTranslationConfig{
+		VirtualTarget: "198.18.0.1:19090", PhysicalTarget: "10.212.17.63:19090",
+		DirectMark: 0x200000, DirectMarkMask: 0xe00000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &orchestrationExecutor{}
+	adb := &deviceExecutor{executor: executor}
+	if err = translation.Install(context.Background(), adb); err != nil {
+		t.Fatal(err)
+	}
+	if err = translation.Cleanup(context.Background(), adb); err != nil {
+		t.Fatal(err)
+	}
+	joined := make([]string, len(executor.calls))
+	for index, call := range executor.calls {
+		joined[index] = strings.Join(call, " ")
+	}
+	all := strings.Join(joined, "\n")
+	for _, want := range []string{
+		"-m owner --uid-owner 0 -j DNAT --to-destination 10.212.17.63:19090",
+		"-m mark --mark 0x200000/0xe00000 -j DNAT --to-destination 10.212.17.63:19090",
+		"-I OUTPUT 1 -j " + translation.chain,
+		"-D OUTPUT -j " + translation.chain,
+		"-F " + translation.chain,
+		"-X " + translation.chain,
+	} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("commands do not contain %q:\n%s", want, all)
+		}
+	}
+	if translation.chainCreated || translation.jumpCreated {
+		t.Fatalf("translation still marked active: %+v", translation)
+	}
+}
+
+func TestAndroidTargetTranslationRejectsMismatchedMatrix(t *testing.T) {
+	_, err := newAndroidTargetTranslation(protocol.MatrixConfig{
+		MatrixID: "bad", Cases: []protocol.Config{{
+			RunID: "auto", Subject: protocol.SubjectConfig{Kind: protocol.SubjectTunAuto},
+			Workload: protocol.WorkloadConfig{Target: "10.212.17.63:19090"},
+		}},
+	}, TargetTranslationConfig{
+		VirtualTarget: "198.18.0.1:19090", PhysicalTarget: "10.212.17.63:19090",
+		DirectMark: 0x200000, DirectMarkMask: 0xe00000,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func containsCall(calls [][]string, want string) bool {
 	return slices.ContainsFunc(calls, func(call []string) bool { return strings.Join(call, " ") == want })
 }

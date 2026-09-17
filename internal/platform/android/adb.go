@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
 	"regexp"
 	"slices"
@@ -28,7 +27,7 @@ func (e OSExecutor) Run(ctx context.Context, arguments ...string) ([]byte, error
 	if binary == "" {
 		binary = "adb"
 	}
-	return exec.CommandContext(ctx, binary, arguments...).CombinedOutput()
+	return newADBCommand(ctx, binary, arguments...).CombinedOutput()
 }
 
 type Plan struct {
