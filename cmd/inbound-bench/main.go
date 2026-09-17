@@ -102,6 +102,7 @@ func run(arguments []string) error {
 		repetitions := flags.Int("repetitions", 0, "measured repetitions per case (0 uses preset default)")
 		duration := flags.Int64("duration-ms", 0, "bulk and UDP PPS duration (0 uses preset default)")
 		idleDuration := flags.Int64("idle-duration-ms", 0, "idle TCP residence duration (0 uses preset default)")
+		requests := flags.Int("requests", 0, "operation count for RTT and TCP short workloads (0 uses preset default)")
 		udpPPS := flags.Int("udp-pps", 0, "total offered UDP packets per second (0 uses preset default)")
 		udpMTUPPS := flags.Int("udp-mtu-pps", 0, "offered PPS for the MTU payload workload (0 uses udp-pps)")
 		cooldown := flags.Int64("cooldown-ms", 1_000, "delay between matrix jobs; UDP PPS jobs also require a raw health probe")
@@ -116,7 +117,7 @@ func run(arguments []string) error {
 			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target, RawTarget: *rawTarget,
 			OutboundInterface: *outboundInterface, WorkerUID: uint32(*workerUID), Seed: *seed,
 			WarmupRepetitions: *warmups, Repetitions: *repetitions, Duration: *duration,
-			IdleDuration: *idleDuration, UDPPPS: *udpPPS, UDPMTUPPS: *udpMTUPPS,
+			IdleDuration: *idleDuration, Requests: *requests, UDPPPS: *udpPPS, UDPMTUPPS: *udpMTUPPS,
 			CooldownMS: *cooldown, FailFast: *failFast, Preset: *preset,
 			Subjects: parseSubjectList(*subjects), Workloads: splitCommaList(*workloads),
 		})
@@ -715,7 +716,7 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 		runtimeErr = runtimeProvider.ValidateRuntimeDiagnostics(runtimeBefore, runtimeAfter)
 	}
 	err := errors.Join(workloadErr, systemDeltaErr, subjectDeltaErr, runtimeErr)
-	validity := protocol.Validity{Valid: err == nil && workerResult.Workload.Counters.Failed == 0 && workerResult.Workload.Counters.Corrupt == 0}
+	validity := protocol.Validity{Valid: err == nil && !invalidWorkloadCounters(config.Workload, workerResult.Workload.Counters)}
 	if err != nil {
 		validity.Reasons = []string{err.Error()}
 	}
@@ -759,6 +760,10 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 		result.Runtime = &protocol.RuntimeDiagnostics{Before: runtimeBefore, After: runtimeAfter}
 	}
 	return result, err
+}
+
+func invalidWorkloadCounters(workload protocol.WorkloadConfig, counters protocol.Counters) bool {
+	return counters.Corrupt > 0 || (workload.Mode != protocol.ModeShort && workload.Mode != protocol.ModeIdle && counters.Failed > 0)
 }
 
 func convertWakeupSources(source map[string]metrics.WakeupSource) map[string]protocol.WakeupSourceCounters {
@@ -815,12 +820,7 @@ func convertInterfaces(source map[string]netdev.Stats) map[string]protocol.Inter
 }
 
 func runWarmup(ctx context.Context, config protocol.Config, index int) (subject.WarmupEvidence, error) {
-	warmup := config.Workload
-	warmup.Requests = max(8, warmup.Connections, warmup.Flows)
-	warmup.DurationMS = 0
-	warmup.Mode = protocol.ModeEcho
-	warmup.PayloadBytes = min(warmup.PayloadBytes, 64)
-	warmup.OfferedPPS = 0
+	warmup := warmupWorkload(config.Workload)
 	warmupConfig := config
 	warmupConfig.Workload = warmup
 	result, err := worker.RunProcess(ctx, "", worker.TemporaryRoot(config.Execution.TemporaryDirectory), makeWorkerRequest(warmupConfig, index, true), worker.ProcessHooks{})
@@ -828,6 +828,17 @@ func runWarmup(ctx context.Context, config protocol.Config, index int) (subject.
 	counters := result.Workload.Counters
 	valid := err == nil && counters.Operations > 0 && counters.Failed == 0 && counters.Corrupt == 0 && len(result.Workload.SocketPaths) > 0
 	return subject.WarmupEvidence{Valid: valid, Token: fmt.Sprintf("%s-proof-%d", config.RunID, index), Details: details}, err
+}
+
+func warmupWorkload(workload protocol.WorkloadConfig) protocol.WorkloadConfig {
+	workload.Connections = min(max(workload.Connections, 1), 8)
+	workload.Flows = min(max(workload.Flows, 1), 8)
+	workload.Requests = max(8, workload.Connections, workload.Flows)
+	workload.DurationMS = 0
+	workload.Mode = protocol.ModeEcho
+	workload.PayloadBytes = min(workload.PayloadBytes, 64)
+	workload.OfferedPPS = 0
+	return workload
 }
 
 func makeWorkerRequest(config protocol.Config, index int, collectProof bool) worker.Request {

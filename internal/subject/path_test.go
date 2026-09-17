@@ -20,6 +20,12 @@ func TestValidateSocketPathEvidence(t *testing.T) {
 	if err := ValidateSocketPathEvidence(makeDetails("192.0.2.1:1000", false), false, &uid, ""); err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateSocketPathEvidence(makeDetails("192.0.2.1:2000", false), false, &uid, ""); err != nil {
+		t.Fatalf("rejected raw traffic after source-port translation: %v", err)
+	}
+	if err := ValidateSocketPathEvidence(makeDetails("192.0.2.2:1000", false), false, &uid, ""); err == nil {
+		t.Fatal("accepted a changed raw source address")
+	}
 	if err := ValidateSocketPathEvidence(makeDetails("192.0.2.1:2000", true), true, &uid, "/sys/fs/cgroup/bench"); err != nil {
 		t.Fatal(err)
 	}

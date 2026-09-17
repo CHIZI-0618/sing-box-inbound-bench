@@ -51,7 +51,8 @@ use `full` (168) only for the publishable run. `--subjects raw,ebpf-tc,ebpf-cgro
 `--workloads standby,tcp-rtt,udp-rtt,udp-rtt-unconnected` can create an explicit diagnostic subset.
 Run a raw-only pilot before choosing `--udp-pps`. Use `--udp-mtu-pps` for the separate 1432-byte
 payload rate; it inherits `--udp-pps` only when omitted. Generate separate 25%, 50% and 75%
-offered-load matrices when comparing efficiency. Never silently edit a matrix after a run starts;
+offered-load matrices when comparing efficiency. Use `--requests` to set the fixed RTT and TCP-short
+operation count without changing the 1000-flow UDP churn workload. Never silently edit a matrix after a run starts;
 resume rejects configuration drift.
 
 Generated matrices wait one second between jobs by default. After every UDP PPS job, the runner also
@@ -92,7 +93,8 @@ from aggregation. A complete directory also needs:
 
 - valid interception proof for every included repetition;
 - `restore_verified=true` for every included repetition;
-- zero corruption and no unexplained loss/drop/error;
+- zero corruption and no infrastructure or lifecycle error; TCP short/idle failures and UDP loss must remain
+  visible as measured reliability outcomes instead of being discarded;
 - no eBPF attachment/state/recovery change or failure-counter increase between runtime snapshots;
 - stable temperature/frequency conditions and a non-bottlenecked server;
 - binary hashes and exact source/dependency revisions;

@@ -83,6 +83,9 @@ func (s Server) serveConnection(connection net.Conn) error {
 	headerBuffer := make([]byte, headerSize)
 	header, err := readHeader(reader, headerBuffer)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
 		return err
 	}
 	if header.length > uint32(s.MaxPayload) {
@@ -321,11 +324,20 @@ func RunIdle(ctx context.Context, config ClientConfig) (protocol.WorkloadResult,
 	}
 	close(start)
 	workers.Wait()
+	var failed uint64
 	for _, err := range errorsByConnection {
-		if err != nil {
+		if err == nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			closeConnections(connections)
+			return protocol.WorkloadResult{}, nil, ctx.Err()
+		}
+		if !isTransportError(err) {
 			closeConnections(connections)
 			return protocol.WorkloadResult{}, nil, err
 		}
+		failed++
 	}
 	setupFinishedAt := time.Now()
 	timer := time.NewTimer(config.Duration)
@@ -343,7 +355,7 @@ func RunIdle(ctx context.Context, config ClientConfig) (protocol.WorkloadResult,
 	}
 	finishedAt := time.Now()
 	return protocol.WorkloadResult{
-		Counters: protocol.Counters{Operations: uint64(len(connections))},
+		Counters: protocol.Counters{Operations: uint64(len(connections)) - failed, Failed: failed},
 		Timing: protocol.WorkloadTiming{
 			StartedAt: startedAt, SetupDurationNS: setupFinishedAt.Sub(startedAt).Nanoseconds(),
 			ActiveDurationNS: finishedAt.Sub(setupFinishedAt).Nanoseconds(), FinishedAt: finishedAt,
@@ -362,6 +374,7 @@ func closeConnections(connections []net.Conn) {
 type atomicCounters struct {
 	operations    atomic.Uint64
 	failed        atomic.Uint64
+	corrupt       atomic.Uint64
 	bytesSent     atomic.Uint64
 	bytesReceived atomic.Uint64
 	once          sync.Once
@@ -376,7 +389,10 @@ func (c *atomicCounters) setError(err error) {
 func (c *atomicCounters) err() error { return c.firstError }
 
 func (c *atomicCounters) snapshot() protocol.Counters {
-	return protocol.Counters{Operations: c.operations.Load(), Failed: c.failed.Load(), BytesSent: c.bytesSent.Load(), BytesReceived: c.bytesReceived.Load()}
+	return protocol.Counters{
+		Operations: c.operations.Load(), Failed: c.failed.Load(), Corrupt: c.corrupt.Load(),
+		BytesSent: c.bytesSent.Load(), BytesReceived: c.bytesReceived.Load(),
+	}
 }
 
 func runEcho(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) error {
@@ -472,16 +488,34 @@ func runShort(ctx context.Context, config ClientConfig, worker int, counters *at
 		localCounters := &atomicCounters{}
 		var localLatency []int64
 		var localPaths []protocol.SocketPathEvidence
-		if err := runEcho(ctx, one, worker+completed, localCounters, &localLatency, &localPaths); err != nil {
-			return err
-		}
+		err := runEcho(ctx, one, worker+completed, localCounters, &localLatency, &localPaths)
 		counters.operations.Add(localCounters.operations.Load())
 		counters.bytesSent.Add(localCounters.bytesSent.Load())
 		counters.bytesReceived.Add(localCounters.bytesReceived.Load())
-		*latencies = append(*latencies, time.Since(started).Nanoseconds())
 		*paths = append(*paths, localPaths...)
+		if err == nil {
+			*latencies = append(*latencies, time.Since(started).Nanoseconds())
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if isTransportError(err) {
+			counters.failed.Add(1)
+			continue
+		}
+		counters.corrupt.Add(1)
+		return err
 	}
 	return nil
+}
+
+func isTransportError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError)
 }
 
 func runUpload(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters) error {

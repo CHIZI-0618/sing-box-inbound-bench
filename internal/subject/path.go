@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
@@ -47,8 +48,10 @@ func ValidateSocketPathEvidence(details json.RawMessage, redirected bool, worker
 		if redirected && client == server {
 			return fmt.Errorf("%s server observed the worker socket tuple; redirection was not proven", path.Network)
 		}
-		if !redirected && client != server {
-			return fmt.Errorf("%s server observed %s instead of raw worker tuple %s", path.Network, server, client)
+		clientAddress, _ := netip.ParseAddrPort(client)
+		serverAddress, _ := netip.ParseAddrPort(server)
+		if !redirected && clientAddress.Addr() != serverAddress.Addr() {
+			return fmt.Errorf("%s server observed source address %s instead of raw worker address %s", path.Network, serverAddress.Addr(), clientAddress.Addr())
 		}
 	}
 	return nil

@@ -45,6 +45,17 @@ func TestTCPServerReportsConnectionErrors(t *testing.T) {
 	}
 }
 
+func TestTCPServerAcceptsIdleConnectionClose(t *testing.T) {
+	server, client := net.Pipe()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Server{MaxPayload: 1 << 20}).serveConnection(server); err != nil {
+		t.Fatalf("idle close: %v", err)
+	}
+	_ = server.Close()
+}
+
 func TestTCPModes(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -77,6 +88,52 @@ func TestTCPModes(t *testing.T) {
 	cancel()
 	if err = <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTCPShortCountsTransportFailureAndContinues(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{}, 3)
+	go func() {
+		for attempt := 0; attempt < 3; attempt++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			accepted <- struct{}{}
+			if attempt == 1 {
+				go func(connection net.Conn) {
+					defer connection.Close()
+					time.Sleep(500 * time.Millisecond)
+				}(connection)
+				continue
+			}
+			go func(connection net.Conn) {
+				defer connection.Close()
+				_ = (Server{MaxPayload: 1 << 20}).serveConnection(connection)
+			}(connection)
+		}
+	}()
+	result, runErr := RunDetailed(context.Background(), ClientConfig{
+		Target: listener.Addr().String(), Mode: protocol.ModeShort, PayloadBytes: 64,
+		Requests: 3, Connections: 1, Timeout: 100 * time.Millisecond,
+	})
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if result.Counters.Operations != 2 || result.Counters.Failed != 1 || result.Counters.Corrupt != 0 || len(result.LatencyNS) != 2 {
+		t.Fatalf("result=%+v", result)
+	}
+	for range 3 {
+		select {
+		case <-accepted:
+		case <-time.After(time.Second):
+			t.Fatal("client did not continue after the failed short connection")
+		}
 	}
 }
 
@@ -185,4 +242,26 @@ func TestTCPIdleLeavesConnectionsOpenForSampling(t *testing.T) {
 	if err = <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestTCPIdleCountsDialFailures(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := listener.Addr().String()
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, connections, err := RunIdle(context.Background(), ClientConfig{
+		Target: target, Mode: protocol.ModeIdle, Connections: 3,
+		Duration: 10 * time.Millisecond, Timeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Counters.Operations != 0 || result.Counters.Failed != 3 || len(connections) != 3 || result.Timing.ActiveDurationNS < int64(10*time.Millisecond) {
+		t.Fatalf("result=%+v connections=%d", result, len(connections))
+	}
+	closeConnections(connections)
 }

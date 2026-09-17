@@ -23,6 +23,7 @@ type Options struct {
 	Repetitions       int
 	Duration          int64
 	IdleDuration      int64
+	Requests          int
 	UDPPPS            int
 	UDPMTUPPS         int
 	CooldownMS        int64
@@ -118,8 +119,8 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 }
 
 func applyPresetDefaults(options *Options) error {
-	if options.WarmupRepetitions < -1 || options.Repetitions < 0 || options.Duration < 0 || options.IdleDuration < 0 || options.UDPPPS < 0 || options.UDPMTUPPS < 0 {
-		return errors.New("warmups must be -1 or non-negative; repetitions, durations, and UDP PPS cannot be negative")
+	if options.WarmupRepetitions < -1 || options.Repetitions < 0 || options.Duration < 0 || options.IdleDuration < 0 || options.Requests < 0 || options.UDPPPS < 0 || options.UDPMTUPPS < 0 {
+		return errors.New("warmups must be -1 or non-negative; repetitions, durations, requests, and UDP PPS cannot be negative")
 	}
 	switch options.Preset {
 	case PresetSmoke:
@@ -311,6 +312,9 @@ func workloads(options Options, target string) ([]workloadTemplate, error) {
 		}
 		if options.Preset == PresetSmoke {
 			template.config.Requests = min(template.config.Requests, 64)
+		}
+		if options.Requests > 0 && name != "udp-churn" && (template.config.Mode == protocol.ModeEcho || template.config.Mode == protocol.ModeShort) {
+			template.config.Requests = options.Requests
 		}
 		selected = append(selected, template)
 	}

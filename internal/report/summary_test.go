@@ -62,6 +62,45 @@ func TestDeliveredBytes(t *testing.T) {
 	}
 }
 
+func TestPPSRatesExcludeDrainTime(t *testing.T) {
+	repetition := protocol.Repetition{
+		DurationNS: int64(12 * time.Second), Counters: protocol.Counters{Operations: 1900, BytesSent: 1900, BytesReceived: 1900},
+		WorkloadTiming: &protocol.WorkloadTiming{ActiveDurationNS: int64(10 * time.Second), DrainDurationNS: int64(2 * time.Second)},
+	}
+	config := protocol.Config{Workload: protocol.WorkloadConfig{Mode: protocol.ModePPS}}
+	value := &caseValues{}
+	appendRepetition(value, repetition, config)
+	if len(value.ops) != 1 || value.ops[0] != 190 || deliveredBitsPerSecond(repetition, config) != 1520 {
+		t.Fatalf("ops=%v bits=%v", value.ops, deliveredBitsPerSecond(repetition, config))
+	}
+}
+
+func TestSummaryReportsShortConnectionSuccessRate(t *testing.T) {
+	value := &caseValues{}
+	repetition := protocol.Repetition{
+		DurationNS: int64(time.Second), Counters: protocol.Counters{Operations: 63, Failed: 1},
+		Validity: protocol.Validity{Valid: true},
+	}
+	appendRepetition(value, repetition, protocol.Config{})
+	summary := summarizeCase(protocol.Config{RunID: "short", Subject: protocol.SubjectConfig{Kind: protocol.SubjectTProxy}}, value)
+	if summary.SuccessPercent != 98.4375 || summary.Statistics["success_percent"].Median != 98.4375 {
+		t.Fatalf("summary=%+v", summary)
+	}
+}
+
+func TestSummaryIncludesUDPLossInSuccessRate(t *testing.T) {
+	value := &caseValues{}
+	repetition := protocol.Repetition{
+		DurationNS: int64(time.Second), Counters: protocol.Counters{Operations: 90, Lost: 10},
+		Validity: protocol.Validity{Valid: true},
+	}
+	appendRepetition(value, repetition, protocol.Config{})
+	summary := summarizeCase(protocol.Config{RunID: "udp", Subject: protocol.SubjectConfig{Kind: protocol.SubjectRaw}}, value)
+	if summary.SuccessPercent != 90 || summary.Statistics["success_percent"].Median != 90 {
+		t.Fatalf("summary=%+v", summary)
+	}
+}
+
 func TestOptionalIdleMetricsAreNotReportedAsObservedZero(t *testing.T) {
 	value := &caseValues{}
 	repetition := protocol.Repetition{DurationNS: int64(time.Second), Validity: protocol.Validity{Valid: true}}

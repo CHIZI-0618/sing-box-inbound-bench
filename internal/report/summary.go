@@ -17,6 +17,7 @@ type CaseSummary struct {
 	ValidRepetitions       int                     `json:"valid_repetitions"`
 	InvalidRepetitions     int                     `json:"invalid_repetitions"`
 	OperationsPerSecond    float64                 `json:"operations_per_second_median"`
+	SuccessPercent         float64                 `json:"success_percent_median,omitempty"`
 	DeliveredBitsPerSecond float64                 `json:"delivered_bits_per_second_median"`
 	LatencyP50NS           int64                   `json:"latency_p50_ns,omitempty"`
 	LatencyP95NS           int64                   `json:"latency_p95_ns,omitempty"`
@@ -63,10 +64,10 @@ type Summary struct {
 }
 
 type caseValues struct {
-	ops, bits, clientCPU, subjectCPU, cpuGiB, rss, pss, uss, bpf []float64
-	contextSwitches, idleTransitions, wakeupEvents, wakeupCount  []float64
-	latency                                                      []int64
-	valid, invalid                                               int
+	ops, success, bits, clientCPU, subjectCPU, cpuGiB, rss, pss, uss, bpf []float64
+	contextSwitches, idleTransitions, wakeupEvents, wakeupCount           []float64
+	latency                                                               []int64
+	valid, invalid                                                        int
 }
 
 func Build(root string, matrix protocol.MatrixConfig, state protocol.MatrixState) (Summary, error) {
@@ -178,8 +179,12 @@ func evaluateControls(result *Summary, matrix protocol.MatrixConfig, control map
 
 func appendRepetition(value *caseValues, repetition protocol.Repetition, config protocol.Config) {
 	value.valid++
-	if repetition.DurationNS > 0 {
-		value.ops = append(value.ops, float64(repetition.Counters.Operations)*1e9/float64(repetition.DurationNS))
+	if rateDuration := rateDurationNS(repetition, config); rateDuration > 0 {
+		value.ops = append(value.ops, float64(repetition.Counters.Operations)*1e9/float64(rateDuration))
+		attempts := repetition.Counters.Operations + repetition.Counters.Failed + repetition.Counters.Lost
+		if attempts > 0 {
+			value.success = append(value.success, float64(repetition.Counters.Operations)/float64(attempts)*100)
+		}
 		value.bits = append(value.bits, deliveredBitsPerSecond(repetition, config))
 		value.clientCPU = append(value.clientCPU, float64(repetition.Resources.ClientRunNanoseconds)/float64(repetition.DurationNS))
 		value.subjectCPU = append(value.subjectCPU, float64(repetition.Resources.SubjectRunNanoseconds)/float64(repetition.DurationNS))
@@ -216,6 +221,7 @@ func summarizeCase(config protocol.Config, value *caseValues) CaseSummary {
 	}
 	item.ValidRepetitions, item.InvalidRepetitions = value.valid, value.invalid
 	item.OperationsPerSecond = median(value.ops)
+	item.SuccessPercent = median(value.success)
 	item.DeliveredBitsPerSecond = median(value.bits)
 	item.ClientCPUCores = median(value.clientCPU)
 	item.SubjectCPUCores = median(value.subjectCPU)
@@ -234,6 +240,7 @@ func summarizeCase(config protocol.Config, value *caseValues) CaseSummary {
 	item.LatencyP999NS = percentile(value.latency, 0.999)
 	item.Statistics = map[string]Distribution{
 		"operations_per_second":              distribution(value.ops),
+		"success_percent":                    distribution(value.success),
 		"delivered_bits_per_second":          distribution(value.bits),
 		"client_cpu_cores":                   distribution(value.clientCPU),
 		"subject_cpu_cores":                  distribution(value.subjectCPU),
@@ -254,12 +261,12 @@ func Markdown(summary Summary) []byte {
 	var output strings.Builder
 	fmt.Fprintf(&output, "# Matrix summary: %s\n\n", summary.MatrixID)
 	output.WriteString("Only non-warmup repetitions with `validity.valid=true` from raw-control-valid blocks are included. Rates and memory are medians.\n\n")
-	output.WriteString("| Case | Subject | Valid | Invalid | Ops/s | Mbit/s | Raw % | p50 ms | p95 ms | p99 ms | Client CPU | Subject CPU | Subject PSS MiB | BPF map MiB |\n")
-	output.WriteString("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	output.WriteString("| Case | Subject | Valid | Invalid | Ops/s | Success % | Mbit/s | Raw % | p50 ms | p95 ms | p99 ms | Client CPU | Subject CPU | Subject PSS MiB | BPF map MiB |\n")
+	output.WriteString("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, item := range summary.Cases {
-		fmt.Fprintf(&output, "| %s | %s | %d | %d | %.2f | %.2f | %.1f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f | %.2f |\n",
+		fmt.Fprintf(&output, "| %s | %s | %d | %d | %.2f | %.3f | %.2f | %.1f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f | %.2f |\n",
 			item.CaseID, item.Subject, item.ValidRepetitions, item.InvalidRepetitions, item.OperationsPerSecond,
-			item.DeliveredBitsPerSecond/1e6, item.RelativeRawPercent, float64(item.LatencyP50NS)/1e6,
+			item.SuccessPercent, item.DeliveredBitsPerSecond/1e6, item.RelativeRawPercent, float64(item.LatencyP50NS)/1e6,
 			float64(item.LatencyP95NS)/1e6, float64(item.LatencyP99NS)/1e6, item.ClientCPUCores,
 			item.SubjectCPUCores, item.SubjectPSSBytes/(1<<20), item.SubjectBPFMemlockBytes/(1<<20))
 	}
@@ -284,10 +291,18 @@ func deliveredBytes(repetition protocol.Repetition, config protocol.Config) uint
 }
 
 func deliveredBitsPerSecond(repetition protocol.Repetition, config protocol.Config) float64 {
-	if repetition.DurationNS <= 0 {
+	duration := rateDurationNS(repetition, config)
+	if duration <= 0 {
 		return 0
 	}
-	return float64(deliveredBytes(repetition, config)) * 8 * 1e9 / float64(repetition.DurationNS)
+	return float64(deliveredBytes(repetition, config)) * 8 * 1e9 / float64(duration)
+}
+
+func rateDurationNS(repetition protocol.Repetition, config protocol.Config) int64 {
+	if config.Workload.Mode == protocol.ModePPS && repetition.WorkloadTiming != nil && repetition.WorkloadTiming.ActiveDurationNS > 0 {
+		return repetition.WorkloadTiming.ActiveDurationNS
+	}
+	return repetition.DurationNS
 }
 
 func workloadKey(workload protocol.WorkloadConfig) string {

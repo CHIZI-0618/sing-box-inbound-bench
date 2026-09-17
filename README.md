@@ -62,6 +62,13 @@ go build -o inbound-bench ./cmd/inbound-bench
 token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每个 repetition 都会
 重新启动被测 sing-box，并在正式计时前完成独立的完整性预热与路径证明。任何阶段失败
 都会留下 invalid repetition；Stop、Cleanup 或 VerifyRestore 失败也会反向使本轮无效。
+路径证明最多使用 8 个连接/flow 和 8 次回显，不会提前复制 idle/PPS 等正式容量压力。
+TCP short 的单连接传输失败和 TCP idle 的建连失败属于被测可靠性/容量结果：worker 会保留
+其余成功连接，在 `failed` 保留失败数，并由汇总输出 `Success %`；帧、校验和或路径证明
+损坏仍会令 repetition invalid。`Success %` 的分母包含成功操作、TCP `failed` 和 UDP
+`lost`，不会把 PPS 丢包显示成 100% 成功。
+UDP PPS 的 Ops/s 与 Mbit/s 使用 offered-load 的 active 窗口；超时收尾的 drain 时间单独
+保留在 workload timing 中，不会再次作为吞吐惩罚。CPU 利用率仍按完整测量 wall time。
 
 矩阵冒烟示例：
 
@@ -105,7 +112,8 @@ MTU payload，省略时才继承前者。两者都应先用 raw pilot 找到链�
 25%/50%/75% 三套矩阵，不能把某台设备的默认 100 kpps 当成统一负载结论。`full` 默认
 1 次额外 warmup repetition 加 5 次正式重复，`core` 为 1+3，`smoke` 为 0+1；这里的 0
 不取消每轮必须执行的路径证明预热。每个 block 前后仍执行 raw control。自定义参数只
-覆盖对应 preset 默认值，不可将不同预设或时长的结果混合统计。
+覆盖对应 preset 默认值，不可将不同预设或时长的结果混合统计。`--requests` 可固定 RTT
+与 TCP short 的离散尝试数；它不改变 `udp-churn` 的 1000-flow 定义。
 
 生成器默认在相邻 job 间冷却 1 秒。UDP PPS job 结束后还会用 `raw_control` 的物理目标
 执行最多 5 次、每次 8 包的低速 UDP 恢复探测；只有 8/8 返回才继续下一个随机 case。
@@ -452,7 +460,7 @@ FakeIP ICMP rewrite 以及 UDP NAT eviction/drop/release 失败计数在窗口�
 - benchmark client 和 server 均未成为 CPU 瓶颈；
 - subject 路径证据显示测试流量被接管，且没有私网或规则 bypass；
 - 数据完整性错误为零；
-- 非预期 drop/error 为零；
+- 基础设施、路径证明与生命周期没有错误；TCP short/idle 和 UDP 的传输失败或丢包作为结果完整报告；
 - cleanup 后状态与基线一致。
 
 不满足门槛的 repetition 应保留原始数据并标记 invalid，不得静默删除或计入汇总。
@@ -461,7 +469,7 @@ FakeIP ICMP rewrite 以及 UDP NAT eviction/drop/release 失败计数在窗口�
 
 每个 subject 必须定义独立的接管证据：
 
-- `raw`：sing-box 未运行；
+- `raw`：sing-box 未运行、服务端确认 worker 源地址；允许中间层在连接跟踪冲突时改写源端口；
 - `direct`：专用 listener 配置存在，且服务端观察到不同于 worker 的 outbound tuple；
 - `redirect`：专用 NAT chain packet/byte counters 增加；
 - `tproxy`：专用 mangle chain、mark 和 policy route counters 增加；

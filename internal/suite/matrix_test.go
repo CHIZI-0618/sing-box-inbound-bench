@@ -142,3 +142,24 @@ func TestGenerateSeparatesMTUOfferedLoad(t *testing.T) {
 		t.Fatalf("cases=%+v", matrix.Cases)
 	}
 }
+
+func TestGenerateOverridesDiscreteRequestCount(t *testing.T) {
+	matrix, err := Generate(Options{
+		MatrixID: "requests", OutputDirectory: "results", SingBoxBinary: "/tmp/sing-box",
+		Target: "192.0.2.2:19090", OutboundInterface: "eth0", WorkerUID: 2000,
+		Preset: PresetCore, Subjects: []protocol.SubjectKind{protocol.SubjectRaw},
+		Workloads: []string{"tcp-rtt", "tcp-short-32", "udp-rtt", "udp-churn"}, Requests: 64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, config := range matrix.Cases {
+		want := 64
+		if config.RunID == "raw-udp-churn" {
+			want = 1000
+		}
+		if config.Workload.Requests != want {
+			t.Fatalf("%s requests=%d want=%d", config.RunID, config.Workload.Requests, want)
+		}
+	}
+}

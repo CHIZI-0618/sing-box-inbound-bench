@@ -63,7 +63,7 @@ func (s *Subject) ObservePath(context.Context) (subject.Observation, error) {
 func (s *Subject) ProvePath(_ context.Context, before, after subject.Observation, warmup subject.WarmupEvidence) (protocol.PathProof, error) {
 	proofError := subject.ValidateSocketPathEvidence(warmup.Details, false, s.WorkerUID, "")
 	return protocol.PathProof{
-		Valid: warmup.Valid && proofError == nil, Method: "server-confirmed raw socket tuple with no sing-box process found during preflight", ObservedAt: time.Now(),
+		Valid: warmup.Valid && proofError == nil, Method: "server-confirmed raw source address with no sing-box process found during preflight", ObservedAt: time.Now(),
 		Before: before.Data, After: after.Data, Evidence: warmup.Details, Error: errorString(proofError),
 	}, nil
 }

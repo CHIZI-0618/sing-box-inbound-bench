@@ -23,6 +23,34 @@ func TestFailedRepetitionPreservesExecutionFailureShape(t *testing.T) {
 	}
 }
 
+func TestShortTransportFailuresRemainMeasuredOutcomes(t *testing.T) {
+	short := protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP, Mode: protocol.ModeShort}
+	if invalidWorkloadCounters(short, protocol.Counters{Operations: 63, Failed: 1}) {
+		t.Fatal("short transport failure was treated as an execution failure")
+	}
+	if !invalidWorkloadCounters(short, protocol.Counters{Operations: 63, Corrupt: 1}) {
+		t.Fatal("short data corruption was accepted")
+	}
+	echo := protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP, Mode: protocol.ModeEcho}
+	if !invalidWorkloadCounters(echo, protocol.Counters{Operations: 63, Failed: 1}) {
+		t.Fatal("non-short workload failure was accepted")
+	}
+	idle := protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP, Mode: protocol.ModeIdle}
+	if invalidWorkloadCounters(idle, protocol.Counters{Operations: 249, Failed: 1}) {
+		t.Fatal("idle connection-capacity failure was treated as an execution failure")
+	}
+}
+
+func TestWarmupProofDoesNotRepeatCapacityLoad(t *testing.T) {
+	warmup := warmupWorkload(protocol.WorkloadConfig{
+		Protocol: protocol.ProtocolTCP, Mode: protocol.ModeIdle, PayloadBytes: 4096,
+		Requests: 20_000, DurationMS: 10_000, Connections: 250, Flows: 64, OfferedPPS: 100_000,
+	})
+	if warmup.Mode != protocol.ModeEcho || warmup.Connections != 8 || warmup.Flows != 8 || warmup.Requests != 8 || warmup.DurationMS != 0 || warmup.PayloadBytes != 64 || warmup.OfferedPPS != 0 {
+		t.Fatalf("warmup=%+v", warmup)
+	}
+}
+
 func TestWriteArtifactsRecordsContentHash(t *testing.T) {
 	root := t.TempDir()
 	records, err := writeArtifacts(root, protocol.SubjectDirect, "rep-000", []subject.Artifact{{Name: "stderr.log", Content: []byte("failure\n"), Truncated: true}})
