@@ -3,11 +3,47 @@ package tcp
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
 )
+
+func TestTCPServerReportsConnectionErrors(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	connectionErrors := make(chan error, 1)
+	go func() {
+		done <- (Server{OnError: func(err error) { connectionErrors <- err }}).Serve(ctx, listener)
+	}()
+	connection, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, headerSize)
+	writeHeader(header, frameHeader{operation: 255})
+	if _, err = connection.Write(header); err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	select {
+	case reported := <-connectionErrors:
+		if !strings.Contains(reported.Error(), "unsupported TCP operation") {
+			t.Fatalf("error=%v", reported)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not report the connection error")
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTCPModes(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

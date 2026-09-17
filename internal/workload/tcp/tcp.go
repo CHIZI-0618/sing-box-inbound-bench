@@ -18,12 +18,14 @@ import (
 
 const (
 	frameMagic   = 0x53424942 // SBIB
-	frameVersion = 3
+	frameVersion = 4
 	headerSize   = 24
 	opEcho       = 1
 	opUpload     = 2
 	opDownload   = 3
 	opShort      = 4
+	opUploadData = 5
+	opUploadDone = 6
 	flagResponse = 1
 	flagProof    = 2
 
@@ -43,6 +45,7 @@ type frameHeader struct {
 
 type Server struct {
 	MaxPayload int
+	OnError    func(error)
 }
 
 func (s Server) Serve(ctx context.Context, listener net.Listener) error {
@@ -67,7 +70,9 @@ func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 		go func() {
 			defer connections.Done()
 			defer connection.Close()
-			_ = s.serveConnection(connection)
+			if serveErr := s.serveConnection(connection); serveErr != nil && s.OnError != nil {
+				s.OnError(serveErr)
+			}
 		}()
 	}
 }
@@ -142,21 +147,38 @@ func (s Server) serveConnection(connection net.Conn) error {
 
 // An upload control header describes one repeated, checksum-protected payload
 // block. sequence is the requested block count, or zero for a duration-limited
-// stream that ends with TCP half-close. Progress acknowledgements bound queued
-// data; the final acknowledgement proves how many complete blocks arrived.
+// stream. Every complete block and the end of the stream have explicit frames,
+// so the benchmark does not depend on half-close propagation through a proxy.
+// Progress acknowledgements bound queued data; the final acknowledgement
+// proves how many complete blocks arrived.
 func (s Server) serveUpload(reader io.Reader, writer *bufio.Writer, control frameHeader, headerBuffer []byte) error {
 	payload := make([]byte, control.length)
 	ackInterval := uploadAckInterval(len(payload))
 	var completed uint64
-	for control.sequence == 0 || completed < control.sequence {
-		_, err := io.ReadFull(reader, payload)
+	for {
+		frame, err := readHeader(reader, headerBuffer)
 		if err != nil {
-			if control.sequence == 0 && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
-				break
-			}
 			return err
 		}
-		if crc32.ChecksumIEEE(payload) != control.checksum {
+		if frame.operation == opUploadDone {
+			if frame.flags != 0 || frame.length != 0 || frame.sequence != completed {
+				return errors.New("upload finish frame mismatch")
+			}
+			if control.sequence != 0 && completed != control.sequence {
+				return fmt.Errorf("upload finished after %d of %d blocks", completed, control.sequence)
+			}
+			return writeUploadAcknowledgement(writer, headerBuffer, completed)
+		}
+		if frame.operation != opUploadData || frame.flags != 0 || frame.length != control.length || frame.sequence != completed+1 || frame.checksum != control.checksum {
+			return errors.New("upload data frame mismatch")
+		}
+		if control.sequence != 0 && frame.sequence > control.sequence {
+			return errors.New("upload exceeded requested block count")
+		}
+		if _, err = io.ReadFull(reader, payload); err != nil {
+			return err
+		}
+		if crc32.ChecksumIEEE(payload) != frame.checksum {
 			return errors.New("upload payload checksum mismatch")
 		}
 		completed++
@@ -166,10 +188,6 @@ func (s Server) serveUpload(reader io.Reader, writer *bufio.Writer, control fram
 			}
 		}
 	}
-	if control.sequence == 0 || completed%ackInterval != 0 {
-		return writeUploadAcknowledgement(writer, headerBuffer, completed)
-	}
-	return nil
 }
 
 func writeUploadAcknowledgement(writer *bufio.Writer, headerBuffer []byte, completed uint64) error {
@@ -489,14 +507,11 @@ func runUpload(ctx context.Context, config ClientConfig, worker int, counters *a
 			break
 		}
 		writeDeadline := time.Now().Add(config.Timeout)
-		if !end.IsZero() {
-			writeDeadline = end
-		}
 		_ = connection.SetWriteDeadline(writeDeadline)
-		if err = writeAll(connection, payload); err != nil {
-			if blocks == 0 && isNetworkTimeout(err) {
-				break
-			}
+		data := frameHeader{operation: opUploadData, length: uint32(len(payload)), sequence: completed + 1, checksum: control.checksum}
+		writeHeader(headerBuffer, data)
+		buffers := net.Buffers{headerBuffer, payload}
+		if _, err = buffers.WriteTo(connection); err != nil {
 			return err
 		}
 		completed++
@@ -508,13 +523,15 @@ func runUpload(ctx context.Context, config ClientConfig, worker int, counters *a
 			}
 		}
 	}
-	if err = connection.CloseWrite(); err != nil {
+	if err = connection.SetWriteDeadline(time.Now().Add(config.Timeout)); err != nil {
 		return err
 	}
-	if blocks == 0 || completed%ackInterval != 0 {
-		if err = readUploadAcknowledgement(connection, headerBuffer, completed, config.Timeout); err != nil {
-			return err
-		}
+	writeHeader(headerBuffer, frameHeader{operation: opUploadDone, sequence: completed})
+	if err = writeAll(connection, headerBuffer); err != nil {
+		return err
+	}
+	if err = readUploadAcknowledgement(connection, headerBuffer, completed, config.Timeout); err != nil {
+		return err
 	}
 	return nil
 }

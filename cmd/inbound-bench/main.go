@@ -148,7 +148,9 @@ func run(arguments []string) error {
 			return err
 		}
 		fmt.Fprintln(os.Stdout, listener.Addr())
-		return (benchTCP.Server{}).Serve(signalContext(), listener)
+		return (benchTCP.Server{OnError: func(err error) {
+			fmt.Fprintln(os.Stderr, "TCP connection:", err)
+		}}).Serve(signalContext(), listener)
 	case "udp-server":
 		flags := flag.NewFlagSet("udp-server", flag.ContinueOnError)
 		listen := flags.String("listen", "0.0.0.0:19090", "listen address")
