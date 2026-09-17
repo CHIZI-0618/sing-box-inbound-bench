@@ -62,6 +62,30 @@ func TestDeliveredBytes(t *testing.T) {
 	}
 }
 
+func TestOptionalIdleMetricsAreNotReportedAsObservedZero(t *testing.T) {
+	value := &caseValues{}
+	repetition := protocol.Repetition{DurationNS: int64(time.Second), Validity: protocol.Validity{Valid: true}}
+	appendRepetition(value, repetition, protocol.Config{})
+	summary := summarizeCase(protocol.Config{RunID: "standby", Subject: protocol.SubjectConfig{Kind: protocol.SubjectRaw}}, value)
+	if _, exists := summary.Statistics["cpu_idle_transitions_per_second"]; exists {
+		t.Fatal("reported unavailable CPU idle counters as zero")
+	}
+	if _, exists := summary.Statistics["wakeup_count_per_second"]; exists {
+		t.Fatal("reported unavailable wakeup counters as zero")
+	}
+	repetition.Resources.CPUIdleUsage = map[string]uint64{"cpu0/state0": 7}
+	repetition.Resources.WakeupSources = map[string]protocol.WakeupSourceCounters{"timer": {EventCount: 5, WakeupCount: 3}}
+	value = &caseValues{}
+	appendRepetition(value, repetition, protocol.Config{})
+	summary = summarizeCase(protocol.Config{RunID: "standby", Subject: protocol.SubjectConfig{Kind: protocol.SubjectRaw}}, value)
+	if summary.Statistics["cpu_idle_transitions_per_second"].Samples != 1 || summary.CPUIdleTransitions != 7 {
+		t.Fatalf("idle summary=%+v", summary)
+	}
+	if summary.Statistics["wakeup_count_per_second"].Samples != 1 || summary.WakeupCount != 3 {
+		t.Fatalf("wakeup summary=%+v", summary)
+	}
+}
+
 func TestOwnedResultPathRejectsEscape(t *testing.T) {
 	if _, err := ownedResultPath(t.TempDir(), "../escape.json"); err == nil {
 		t.Fatal("accepted escaping path")

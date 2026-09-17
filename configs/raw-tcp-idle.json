@@ -1,5 +1,5 @@
 {
-  "protocol_version": "inbound-bench/v2",
+  "protocol_version": "inbound-bench/v3",
   "run_id": "example-raw-tcp-idle",
   "subject": { "kind": "raw" },
   "workload": {

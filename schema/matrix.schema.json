@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "matrix_id", "seed", "output_directory", "cases"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v2" },
+    "protocol_version": { "const": "inbound-bench/v3" },
     "matrix_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
     "seed": { "type": "integer" },
     "output_directory": { "type": "string", "minLength": 1 },

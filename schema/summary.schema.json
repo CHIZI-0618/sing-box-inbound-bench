@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "matrix_id", "cases"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v2" },
+    "protocol_version": { "const": "inbound-bench/v3" },
     "matrix_id": { "type": "string" },
     "cases": {
       "type": "array",
@@ -25,6 +25,10 @@
           "subject_cpu_seconds_per_gib_median": { "type": "number", "minimum": 0 },
           "subject_rss_bytes_median": { "type": "number", "minimum": 0 }, "subject_pss_bytes_median": { "type": "number", "minimum": 0 },
           "subject_uss_bytes_median": { "type": "number", "minimum": 0 }, "subject_bpf_map_memlock_bytes_median": { "type": "number", "minimum": 0 },
+          "system_context_switches_per_second_median": { "type": "number", "minimum": 0 },
+          "cpu_idle_transitions_per_second_median": { "type": "number", "minimum": 0 },
+          "wakeup_source_events_per_second_median": { "type": "number", "minimum": 0 },
+          "wakeup_count_per_second_median": { "type": "number", "minimum": 0 },
           "relative_raw_percent": { "type": "number", "minimum": 0 }, "relative_direct_percent": { "type": "number", "minimum": 0 },
           "statistics": {
             "type": "object",

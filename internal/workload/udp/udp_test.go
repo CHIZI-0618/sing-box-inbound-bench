@@ -5,6 +5,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
 )
 
 func TestUDPEcho(t *testing.T) {
@@ -15,15 +17,17 @@ func TestUDPEcho(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- (Server{}).Serve(ctx, connection) }()
-	result, latency, err := Run(context.Background(), ClientConfig{Target: connection.LocalAddr().String(), PayloadBytes: 1432, Requests: 40, Flows: 4, Timeout: time.Second, RunHash: 42})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Operations != 40 || len(latency) != 40 || result.Corrupt != 0 || result.Lost != 0 {
-		t.Fatalf("result=%+v latency=%d", result, len(latency))
-	}
-	if result.BytesSent != 40*1432 || result.BytesReceived != 40*1432 {
-		t.Fatalf("UDP byte counters must contain payload only: %+v", result)
+	for _, socketMode := range []protocol.UDPSocketMode{protocol.UDPSocketConnected, protocol.UDPSocketUnconnected} {
+		result, latency, runErr := Run(context.Background(), ClientConfig{Target: connection.LocalAddr().String(), PayloadBytes: 1432, Requests: 40, Flows: 4, Timeout: time.Second, RunHash: 42, SocketMode: socketMode})
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if result.Operations != 40 || len(latency) != 40 || result.Corrupt != 0 || result.Lost != 0 {
+			t.Fatalf("mode=%s result=%+v latency=%d", socketMode, result, len(latency))
+		}
+		if result.BytesSent != 40*1432 || result.BytesReceived != 40*1432 {
+			t.Fatalf("mode=%s UDP byte counters must contain payload only: %+v", socketMode, result)
+		}
 	}
 	cancel()
 	if err = <-done; err != nil {
@@ -48,15 +52,17 @@ func TestUDPPOpenLoop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- (Server{}).Serve(ctx, connection) }()
-	result, latency, err := Run(context.Background(), ClientConfig{Target: connection.LocalAddr().String(), Mode: "pps", PayloadBytes: 64, Requests: 100, Flows: 2, OfferedPPS: 1000, Timeout: time.Second, RunHash: 7})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Operations != 100 || len(latency) != 100 || result.Lost != 0 {
-		t.Fatalf("result=%+v latency=%d", result, len(latency))
-	}
-	if result.BytesSent != 100*64 || result.BytesReceived != 100*64 {
-		t.Fatalf("UDP byte counters must contain payload only: %+v", result)
+	for _, socketMode := range []protocol.UDPSocketMode{protocol.UDPSocketConnected, protocol.UDPSocketUnconnected} {
+		result, latency, runErr := Run(context.Background(), ClientConfig{Target: connection.LocalAddr().String(), Mode: "pps", PayloadBytes: 64, Requests: 100, Flows: 2, OfferedPPS: 1000, Timeout: time.Second, RunHash: 7, SocketMode: socketMode})
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if result.Operations != 100 || len(latency) != 100 || result.Lost != 0 {
+			t.Fatalf("mode=%s result=%+v latency=%d", socketMode, result, len(latency))
+		}
+		if result.BytesSent != 100*64 || result.BytesReceived != 100*64 {
+			t.Fatalf("mode=%s UDP byte counters must contain payload only: %+v", socketMode, result)
+		}
 	}
 	cancel()
 	if err = <-done; err != nil {
@@ -110,12 +116,14 @@ func TestUDPPathEvidence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- (Server{}).Serve(ctx, connection) }()
-	result, err := RunDetailed(context.Background(), ClientConfig{Target: connection.LocalAddr().String(), Mode: "echo", PayloadBytes: 64, Requests: 1, Flows: 1, Timeout: time.Second, RunHash: 42, CollectProof: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.SocketPaths) != 1 || result.SocketPaths[0].ClientLocal != result.SocketPaths[0].ServerObservedPeer {
-		t.Fatalf("paths=%+v", result.SocketPaths)
+	for _, socketMode := range []protocol.UDPSocketMode{protocol.UDPSocketConnected, protocol.UDPSocketUnconnected} {
+		result, runErr := RunDetailed(context.Background(), ClientConfig{Target: connection.LocalAddr().String(), Mode: "echo", PayloadBytes: 64, Requests: 1, Flows: 1, Timeout: time.Second, RunHash: 42, CollectProof: true, SocketMode: socketMode})
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if len(result.SocketPaths) != 1 || result.SocketPaths[0].ClientLocal != result.SocketPaths[0].ServerObservedPeer {
+			t.Fatalf("mode=%s paths=%+v", socketMode, result.SocketPaths)
+		}
 	}
 	cancel()
 	if err = <-done; err != nil {

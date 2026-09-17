@@ -10,7 +10,7 @@ import (
 
 func TestReadConfigRejectsUnknownField(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	content := `{"protocol_version":"inbound-bench/v2","run_id":"test","unknown":true}`
+	content := `{"protocol_version":"inbound-bench/v3","run_id":"test","unknown":true}`
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

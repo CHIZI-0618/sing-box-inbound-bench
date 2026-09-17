@@ -164,6 +164,20 @@ func runWorkload(ctx context.Context, request Request) (protocol.WorkloadResult,
 	workload := request.Workload
 	timeout := time.Duration(workload.TimeoutMS) * time.Millisecond
 	duration := time.Duration(workload.DurationMS) * time.Millisecond
+	if workload.Mode == protocol.ModeStandby {
+		startedAt := time.Now()
+		timer := time.NewTimer(duration)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			finishedAt := time.Now()
+			return protocol.WorkloadResult{Timing: protocol.WorkloadTiming{
+				StartedAt: startedAt, ActiveDurationNS: finishedAt.Sub(startedAt).Nanoseconds(), FinishedAt: finishedAt,
+			}}, nil
+		case <-ctx.Done():
+			return protocol.WorkloadResult{}, ctx.Err()
+		}
+	}
 	if workload.Protocol == protocol.ProtocolTCP {
 		return benchTCP.RunDetailed(ctx, benchTCP.ClientConfig{
 			Target: workload.Target, Mode: workload.Mode, PayloadBytes: workload.PayloadBytes, Requests: workload.Requests,
@@ -175,6 +189,6 @@ func runWorkload(ctx context.Context, request Request) (protocol.WorkloadResult,
 	return benchUDP.RunDetailed(ctx, benchUDP.ClientConfig{
 		Target: workload.Target, Mode: workload.Mode, PayloadBytes: workload.PayloadBytes, Requests: workload.Requests,
 		Duration: duration, Flows: workload.Flows, OfferedPPS: workload.OfferedPPS, Timeout: timeout,
-		RunHash: hash.Sum32(), CollectProof: request.CollectProof,
+		RunHash: hash.Sum32(), CollectProof: request.CollectProof, SocketMode: workload.UDPSocketMode,
 	})
 }

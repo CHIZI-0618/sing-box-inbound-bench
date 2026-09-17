@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "remote_root", "benchmark_binary", "sing_box_binary", "matrix_config", "local_output_directory"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v2" },
+    "protocol_version": { "const": "inbound-bench/v3" },
     "serial": { "type": "string" },
     "adb": { "type": "string" },
     "remote_root": { "type": "string", "pattern": "^/data/local/tmp/sing-box(?:/.*)?$" },

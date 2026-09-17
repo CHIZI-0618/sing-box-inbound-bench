@@ -1,11 +1,11 @@
 {
-  "protocol_version": "inbound-bench/v2",
+  "protocol_version": "inbound-bench/v3",
   "matrix_id": "example-raw-matrix",
   "seed": 20260915,
   "output_directory": "results",
   "resume": false,
   "raw_control": {
-    "protocol_version": "inbound-bench/v2",
+    "protocol_version": "inbound-bench/v3",
     "run_id": "raw-control",
     "subject": { "kind": "raw" },
     "workload": {
@@ -16,7 +16,7 @@
   },
   "cases": [
     {
-      "protocol_version": "inbound-bench/v2",
+      "protocol_version": "inbound-bench/v3",
       "run_id": "raw-tcp-echo",
       "subject": { "kind": "raw" },
       "workload": {
@@ -26,7 +26,7 @@
       "execution": { "warmup_repetitions": 1, "repetitions": 2, "output_directory": "ignored" }
     },
     {
-      "protocol_version": "inbound-bench/v2",
+      "protocol_version": "inbound-bench/v3",
       "run_id": "raw-tcp-upload",
       "subject": { "kind": "raw" },
       "workload": {

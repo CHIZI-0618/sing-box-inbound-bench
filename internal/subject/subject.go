@@ -25,6 +25,14 @@ type Artifact struct {
 	Truncated bool
 }
 
+// RuntimeDiagnosticsProvider captures subject-specific runtime state outside
+// the measured workload interval. Implementations should keep observation
+// side effects out of the timed data path.
+type RuntimeDiagnosticsProvider interface {
+	ObserveRuntimeDiagnostics(context.Context) (json.RawMessage, error)
+	ValidateRuntimeDiagnostics(before, after json.RawMessage) error
+}
+
 type Subject interface {
 	Kind() protocol.SubjectKind
 	Preflight(context.Context) error

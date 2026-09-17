@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "run_id", "subject", "index", "warmup", "started_at", "duration_ns", "counters", "resources", "path_proof", "validity", "execution"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v2" },
+    "protocol_version": { "const": "inbound-bench/v3" },
     "run_id": { "type": "string" },
     "subject": { "enum": ["raw", "direct", "redirect", "tproxy", "tun", "tun-auto-redirect", "ebpf-tc", "ebpf-cgroup"] },
     "index": { "type": "integer", "minimum": 0 },
@@ -135,8 +135,33 @@
         "thermal_after_millicelsius": { "type": "object", "additionalProperties": { "type": "integer" } },
         "cpu_frequency_before_khz": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
         "cpu_frequency_after_khz": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "cpu_idle_time_microseconds": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "cpu_idle_usage": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "wakeup_sources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["event_count", "wakeup_count", "total_time", "prevent_suspend_time"],
+            "properties": {
+              "event_count": { "type": "integer", "minimum": 0 },
+              "wakeup_count": { "type": "integer", "minimum": 0 },
+              "total_time": { "type": "integer", "minimum": 0 },
+              "prevent_suspend_time": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
         "conntrack_count_before": { "type": "integer", "minimum": 0 },
         "conntrack_count_after": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runtime_diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before", "after"],
+      "properties": {
+        "before": {},
+        "after": {}
       }
     },
     "path_proof": {

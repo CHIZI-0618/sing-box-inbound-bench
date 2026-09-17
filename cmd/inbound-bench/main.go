@@ -94,11 +94,14 @@ func run(arguments []string) error {
 		outboundInterface := flags.String("interface", "", "physical benchmark interface")
 		workerUID := flags.Uint("worker-uid", 2000, "dedicated benchmark worker UID")
 		seed := flags.Int64("seed", 20260915, "randomization seed")
-		warmups := flags.Int("warmups", 1, "warmup repetitions per case")
-		repetitions := flags.Int("repetitions", 5, "measured repetitions per case")
-		duration := flags.Int64("duration-ms", 20_000, "bulk and UDP PPS duration")
-		idleDuration := flags.Int64("idle-duration-ms", 10_000, "idle TCP residence duration")
-		udpPPS := flags.Int("udp-pps", 100_000, "total offered UDP packets per second")
+		preset := flags.String("preset", suite.PresetFull, "matrix preset: smoke, core, or full")
+		subjects := flags.String("subjects", "", "comma-separated subject filter")
+		workloads := flags.String("workloads", "", "comma-separated workload filter")
+		warmups := flags.Int("warmups", -1, "warmup repetitions per case (-1 uses preset default)")
+		repetitions := flags.Int("repetitions", 0, "measured repetitions per case (0 uses preset default)")
+		duration := flags.Int64("duration-ms", 0, "bulk and UDP PPS duration (0 uses preset default)")
+		idleDuration := flags.Int64("idle-duration-ms", 0, "idle TCP residence duration (0 uses preset default)")
+		udpPPS := flags.Int("udp-pps", 0, "total offered UDP packets per second (0 uses preset default)")
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return err
 		}
@@ -109,7 +112,8 @@ func run(arguments []string) error {
 			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target,
 			OutboundInterface: *outboundInterface, WorkerUID: uint32(*workerUID), Seed: *seed,
 			WarmupRepetitions: *warmups, Repetitions: *repetitions, Duration: *duration,
-			IdleDuration: *idleDuration, UDPPPS: *udpPPS,
+			IdleDuration: *idleDuration, UDPPPS: *udpPPS, Preset: *preset,
+			Subjects: parseSubjectList(*subjects), Workloads: splitCommaList(*workloads),
 		})
 		if err != nil {
 			return err
@@ -171,6 +175,26 @@ func run(arguments []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", arguments[0])
 	}
+}
+
+func splitCommaList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		result = append(result, strings.TrimSpace(item))
+	}
+	return result
+}
+
+func parseSubjectList(value string) []protocol.SubjectKind {
+	items := splitCommaList(value)
+	result := make([]protocol.SubjectKind, len(items))
+	for index, item := range items {
+		result[index] = protocol.SubjectKind(item)
+	}
+	return result
 }
 
 func runBenchmark(configPath string) error {
@@ -544,29 +568,47 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 	var subjectAfter metrics.ProcessSnapshot
 	var subjectDeltaErr error
 	provider, hasProcess := selected.(processProvider)
+	runtimeProvider, hasRuntimeDiagnostics := selected.(subject.RuntimeDiagnosticsProvider)
+	hasRuntimeDiagnostics = hasRuntimeDiagnostics && (selected.Kind() == protocol.SubjectEBPFTC || selected.Kind() == protocol.SubjectEBPFCgroup)
+	var runtimeBefore json.RawMessage
+	var runtimeAfter json.RawMessage
 	request := makeWorkerRequest(config, index, false)
 	workerResult, workloadErr := worker.RunProcess(ctx, "", worker.TemporaryRoot(config.Execution.TemporaryDirectory), request, worker.ProcessHooks{
 		BeforeStart: func(ready worker.Ready) error {
+			var runtimeErr error
+			if hasRuntimeDiagnostics {
+				runtimeBefore, runtimeErr = runtimeProvider.ObserveRuntimeDiagnostics(ctx)
+			}
 			var err error
 			hostBefore, err = metrics.ReadHost(measuredInterfaces(config))
 			if err != nil {
-				return err
+				return errors.Join(runtimeErr, err)
 			}
 			if hasProcess && provider.ProcessID() > 0 {
 				subjectBefore, err = metrics.ReadProcess(provider.ProcessID())
 			}
-			return err
+			return errors.Join(runtimeErr, err)
 		},
 		AfterWorkload: func() error {
+			var errs []error
 			var err error
 			hostAfter, err = metrics.ReadHost(measuredInterfaces(config))
 			if err != nil {
-				return err
+				errs = append(errs, err)
 			}
 			if hasProcess && provider.ProcessID() > 0 {
 				subjectAfter, err = metrics.ReadProcess(provider.ProcessID())
+				if err != nil {
+					errs = append(errs, err)
+				}
 			}
-			return err
+			if hasRuntimeDiagnostics {
+				runtimeAfter, err = runtimeProvider.ObserveRuntimeDiagnostics(ctx)
+				if err != nil {
+					errs = append(errs, err)
+				}
+			}
+			return errors.Join(errs...)
 		},
 	})
 	if workerResult.Workload.Timing.StartedAt.IsZero() {
@@ -577,7 +619,11 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 	if hasProcess && provider.ProcessID() > 0 {
 		subjectDelta, subjectDeltaErr = metrics.ProcessDelta(subjectBefore, subjectAfter)
 	}
-	err := errors.Join(workloadErr, systemDeltaErr, subjectDeltaErr)
+	var runtimeErr error
+	if hasRuntimeDiagnostics && len(runtimeBefore) > 0 && len(runtimeAfter) > 0 {
+		runtimeErr = runtimeProvider.ValidateRuntimeDiagnostics(runtimeBefore, runtimeAfter)
+	}
+	err := errors.Join(workloadErr, systemDeltaErr, subjectDeltaErr, runtimeErr)
 	validity := protocol.Validity{Valid: err == nil && workerResult.Workload.Counters.Failed == 0 && workerResult.Workload.Counters.Corrupt == 0}
 	if err != nil {
 		validity.Reasons = []string{err.Error()}
@@ -613,10 +659,29 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 			SystemMajorPageFaults: hostDelta.System.MajorPageFaults, SystemMigrations: hostDelta.System.Migrations,
 			Interfaces: convertInterfaces(hostDelta.Interfaces), ThermalBefore: hostBefore.Thermal, ThermalAfter: hostAfter.Thermal,
 			CPUFrequencyBefore: hostBefore.CPUFrequency, CPUFrequencyAfter: hostAfter.CPUFrequency,
+			CPUIdleTime: hostDelta.CPUIdleTime, CPUIdleUsage: hostDelta.CPUIdleUsage,
+			WakeupSources:        convertWakeupSources(hostDelta.WakeupSources),
 			ConntrackCountBefore: hostBefore.ConntrackCount, ConntrackCountAfter: hostAfter.ConntrackCount,
 		},
 	}
+	if hasRuntimeDiagnostics {
+		result.Runtime = &protocol.RuntimeDiagnostics{Before: runtimeBefore, After: runtimeAfter}
+	}
 	return result, err
+}
+
+func convertWakeupSources(source map[string]metrics.WakeupSource) map[string]protocol.WakeupSourceCounters {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string]protocol.WakeupSourceCounters, len(source))
+	for name, counters := range source {
+		result[name] = protocol.WakeupSourceCounters{
+			EventCount: counters.EventCount, WakeupCount: counters.WakeupCount,
+			TotalTime: counters.TotalTime, PreventSuspendTime: counters.PreventSuspendTime,
+		}
+	}
+	return result
 }
 
 func measuredInterfaces(config protocol.Config) []string {

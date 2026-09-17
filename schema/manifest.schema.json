@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "run_id", "created_at", "tool_version", "go_version", "goos", "goarch", "subject"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v2" },
+    "protocol_version": { "const": "inbound-bench/v3" },
     "run_id": { "type": "string" },
     "created_at": { "type": "string", "format": "date-time" },
     "tool_version": { "type": "string" },

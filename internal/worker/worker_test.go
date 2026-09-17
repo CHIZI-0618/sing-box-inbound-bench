@@ -106,3 +106,15 @@ func TestRunProcessHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStandbyWorkload(t *testing.T) {
+	result, err := runWorkload(context.Background(), Request{Workload: protocol.WorkloadConfig{
+		Protocol: protocol.ProtocolTCP, Mode: protocol.ModeStandby, DurationMS: 5,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Counters.Operations != 0 || result.Timing.ActiveDurationNS <= 0 || result.Timing.FinishedAt.IsZero() {
+		t.Fatalf("result=%+v", result)
+	}
+}

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "matrix_id", "seed", "jobs"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v2" },
+    "protocol_version": { "const": "inbound-bench/v3" },
     "matrix_id": { "type": "string" },
     "seed": { "type": "integer" },
     "jobs": {

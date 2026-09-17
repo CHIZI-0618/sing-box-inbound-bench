@@ -23,7 +23,16 @@ type Options struct {
 	Duration          int64
 	IdleDuration      int64
 	UDPPPS            int
+	Preset            string
+	Subjects          []protocol.SubjectKind
+	Workloads         []string
 }
+
+const (
+	PresetSmoke = "smoke"
+	PresetCore  = "core"
+	PresetFull  = "full"
+)
 
 type workloadTemplate struct {
 	name   string
@@ -37,17 +46,11 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 	if options.Seed == 0 {
 		options.Seed = 20260915
 	}
-	if options.Repetitions == 0 {
-		options.Repetitions = 5
+	if options.Preset == "" {
+		options.Preset = PresetFull
 	}
-	if options.Duration == 0 {
-		options.Duration = 20_000
-	}
-	if options.IdleDuration == 0 {
-		options.IdleDuration = 10_000
-	}
-	if options.UDPPPS == 0 {
-		options.UDPPPS = 100_000
+	if err := applyPresetDefaults(&options); err != nil {
+		return protocol.MatrixConfig{}, err
 	}
 	target, err := netip.ParseAddrPort(options.Target)
 	if err != nil {
@@ -56,10 +59,13 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 	if options.OutputDirectory == "" || options.SingBoxBinary == "" || options.OutboundInterface == "" {
 		return protocol.MatrixConfig{}, errors.New("output directory, sing-box binary and outbound interface are required")
 	}
-	templates := workloads(options, target.String())
-	subjects := []protocol.SubjectKind{
-		protocol.SubjectRaw, protocol.SubjectDirect, protocol.SubjectRedirect, protocol.SubjectTProxy,
-		protocol.SubjectTun, protocol.SubjectTunAuto, protocol.SubjectEBPFTC, protocol.SubjectEBPFCgroup,
+	templates, err := workloads(options, target.String())
+	if err != nil {
+		return protocol.MatrixConfig{}, err
+	}
+	subjects, err := selectedSubjects(options.Subjects)
+	if err != nil {
+		return protocol.MatrixConfig{}, err
 	}
 	matrix := protocol.MatrixConfig{
 		ProtocolVersion: protocol.Version, MatrixID: options.MatrixID, Seed: options.Seed,
@@ -92,11 +98,104 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 	return matrix, nil
 }
 
-func workloads(options Options, target string) []workloadTemplate {
+func applyPresetDefaults(options *Options) error {
+	if options.WarmupRepetitions < -1 || options.Repetitions < 0 || options.Duration < 0 || options.IdleDuration < 0 || options.UDPPPS < 0 {
+		return errors.New("warmups must be -1 or non-negative; repetitions, durations, and UDP PPS cannot be negative")
+	}
+	switch options.Preset {
+	case PresetSmoke:
+		if options.WarmupRepetitions == -1 {
+			options.WarmupRepetitions = 0
+		}
+		if options.Repetitions == 0 {
+			options.Repetitions = 1
+		}
+		if options.Duration == 0 {
+			options.Duration = 1_000
+		}
+		if options.IdleDuration == 0 {
+			options.IdleDuration = 1_000
+		}
+		if options.UDPPPS == 0 {
+			options.UDPPPS = 10_000
+		}
+	case PresetCore:
+		if options.WarmupRepetitions == -1 {
+			options.WarmupRepetitions = 1
+		}
+		if options.Repetitions == 0 {
+			options.Repetitions = 3
+		}
+		if options.Duration == 0 {
+			options.Duration = 10_000
+		}
+		if options.IdleDuration == 0 {
+			options.IdleDuration = 10_000
+		}
+		if options.UDPPPS == 0 {
+			options.UDPPPS = 100_000
+		}
+	case PresetFull:
+		if options.WarmupRepetitions == -1 {
+			options.WarmupRepetitions = 1
+		}
+		if options.Repetitions == 0 {
+			options.Repetitions = 5
+		}
+		if options.Duration == 0 {
+			options.Duration = 20_000
+		}
+		if options.IdleDuration == 0 {
+			options.IdleDuration = 10_000
+		}
+		if options.UDPPPS == 0 {
+			options.UDPPPS = 100_000
+		}
+	default:
+		return fmt.Errorf("unknown matrix preset %q (want smoke, core, or full)", options.Preset)
+	}
+	if options.WarmupRepetitions == -1 {
+		options.WarmupRepetitions = 0
+	}
+	return nil
+}
+
+func selectedSubjects(requested []protocol.SubjectKind) ([]protocol.SubjectKind, error) {
+	available := []protocol.SubjectKind{
+		protocol.SubjectRaw, protocol.SubjectDirect, protocol.SubjectRedirect, protocol.SubjectTProxy,
+		protocol.SubjectTun, protocol.SubjectTunAuto, protocol.SubjectEBPFTC, protocol.SubjectEBPFCgroup,
+	}
+	if len(requested) == 0 {
+		return available, nil
+	}
+	wanted := make(map[protocol.SubjectKind]bool, len(requested))
+	for _, kind := range requested {
+		if wanted[kind] {
+			return nil, fmt.Errorf("duplicate subject %q", kind)
+		}
+		wanted[kind] = true
+	}
+	var selected []protocol.SubjectKind
+	for _, kind := range available {
+		if wanted[kind] {
+			selected = append(selected, kind)
+			delete(wanted, kind)
+		}
+	}
+	if len(wanted) > 0 {
+		for kind := range wanted {
+			return nil, fmt.Errorf("unknown subject %q", kind)
+		}
+	}
+	return selected, nil
+}
+
+func workloads(options Options, target string) ([]workloadTemplate, error) {
 	base := func(network protocol.WorkloadProtocol, mode protocol.WorkloadMode, payload int) protocol.WorkloadConfig {
 		return protocol.WorkloadConfig{Protocol: network, Mode: mode, Target: target, PayloadBytes: payload, Connections: 1, Flows: 1, TimeoutMS: 2_000}
 	}
 	result := []workloadTemplate{
+		{name: "standby", config: base(protocol.ProtocolTCP, protocol.ModeStandby, 1)},
 		{name: "tcp-rtt", config: base(protocol.ProtocolTCP, protocol.ModeEcho, 64)},
 		{name: "tcp-upload-1", config: base(protocol.ProtocolTCP, protocol.ModeBulkUpload, 64<<10)},
 		{name: "tcp-upload-8", config: base(protocol.ProtocolTCP, protocol.ModeBulkUpload, 64<<10)},
@@ -106,8 +205,11 @@ func workloads(options Options, target string) []workloadTemplate {
 		{name: "tcp-short-32", config: base(protocol.ProtocolTCP, protocol.ModeShort, 64)},
 		{name: "tcp-short-128", config: base(protocol.ProtocolTCP, protocol.ModeShort, 64)},
 		{name: "udp-rtt", config: base(protocol.ProtocolUDP, protocol.ModeEcho, 64)},
+		{name: "udp-rtt-unconnected", config: base(protocol.ProtocolUDP, protocol.ModeEcho, 64)},
 		{name: "udp-pps-1", config: base(protocol.ProtocolUDP, protocol.ModePPS, 64)},
+		{name: "udp-pps-1-unconnected", config: base(protocol.ProtocolUDP, protocol.ModePPS, 64)},
 		{name: "udp-pps-64", config: base(protocol.ProtocolUDP, protocol.ModePPS, 64)},
+		{name: "udp-pps-64-unconnected", config: base(protocol.ProtocolUDP, protocol.ModePPS, 64)},
 		{name: "udp-mtu", config: base(protocol.ProtocolUDP, protocol.ModePPS, 1432)},
 		{name: "udp-churn", config: base(protocol.ProtocolUDP, protocol.ModeEcho, 64)},
 	}
@@ -119,6 +221,9 @@ func workloads(options Options, target string) []workloadTemplate {
 	}
 	for index := range result {
 		config := &result[index].config
+		if strings.HasSuffix(result[index].name, "-unconnected") {
+			config.UDPSocketMode = protocol.UDPSocketUnconnected
+		}
 		switch config.Mode {
 		case protocol.ModeEcho:
 			if result[index].name == "udp-churn" {
@@ -139,12 +244,52 @@ func workloads(options Options, target string) []workloadTemplate {
 		case protocol.ModePPS:
 			config.DurationMS = options.Duration
 			config.OfferedPPS = options.UDPPPS
-			if result[index].name == "udp-pps-64" {
+			if strings.HasPrefix(result[index].name, "udp-pps-64") {
 				config.Flows = 64
+			}
+		case protocol.ModeStandby:
+			config.DurationMS = options.IdleDuration
+		}
+	}
+	selectedNames := options.Workloads
+	if len(selectedNames) == 0 {
+		switch options.Preset {
+		case PresetSmoke:
+			selectedNames = []string{"tcp-rtt", "udp-rtt", "udp-rtt-unconnected"}
+		case PresetCore:
+			selectedNames = []string{
+				"standby", "tcp-rtt", "tcp-upload-1", "tcp-upload-8", "tcp-download-1", "tcp-download-8", "tcp-short-32",
+				"tcp-idle-1", "tcp-idle-500", "udp-rtt", "udp-rtt-unconnected", "udp-pps-1", "udp-pps-64",
+				"udp-pps-64-unconnected", "udp-churn",
+			}
+		case PresetFull:
+			selectedNames = make([]string, 0, len(result))
+			for _, template := range result {
+				selectedNames = append(selectedNames, template.name)
 			}
 		}
 	}
-	return result
+	available := make(map[string]workloadTemplate, len(result))
+	for _, template := range result {
+		available[template.name] = template
+	}
+	selected := make([]workloadTemplate, 0, len(selectedNames))
+	seen := make(map[string]bool, len(selectedNames))
+	for _, name := range selectedNames {
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate workload %q", name)
+		}
+		seen[name] = true
+		template, exists := available[name]
+		if !exists {
+			return nil, fmt.Errorf("unknown workload %q", name)
+		}
+		if options.Preset == PresetSmoke {
+			template.config.Requests = min(template.config.Requests, 64)
+		}
+		selected = append(selected, template)
+	}
+	return selected, nil
 }
 
 func buildConfig(options Options, target netip.AddrPort, kind protocol.SubjectKind, workload workloadTemplate) protocol.Config {
@@ -165,29 +310,27 @@ func buildConfig(options Options, target netip.AddrPort, kind protocol.SubjectKi
 		loopback = netip.IPv6Loopback()
 		tunAddress = []string{"fd00:7362:6962::1/126"}
 	}
+	if kind != protocol.SubjectRaw {
+		config.Subject.SingBoxBinary = options.SingBoxBinary
+		config.Subject.APIListen = netip.AddrPortFrom(loopback, 19091).String()
+		config.Subject.APIToken = "benchmark-" + options.MatrixID
+	}
 	switch kind {
 	case protocol.SubjectRaw:
 		config.Subject.OutboundInterface = ""
 	case protocol.SubjectDirect:
-		config.Subject.SingBoxBinary = options.SingBoxBinary
 		config.Subject.Listen = netip.AddrPortFrom(loopback, 18080).String()
 		config.Subject.Target = target.String()
 		config.Workload.Target = config.Subject.Listen
 	case protocol.SubjectRedirect:
-		config.Subject.SingBoxBinary = options.SingBoxBinary
 		config.Subject.Listen = netip.AddrPortFrom(loopback, 15001).String()
 	case protocol.SubjectTProxy:
-		config.Subject.SingBoxBinary = options.SingBoxBinary
 		config.Subject.Listen = netip.AddrPortFrom(loopback, 15002).String()
 	case protocol.SubjectTun, protocol.SubjectTunAuto:
-		config.Subject.SingBoxBinary = options.SingBoxBinary
 		config.Subject.TunAddress = tunAddress
 		config.Subject.MTU = 1500
 	case protocol.SubjectEBPFTC, protocol.SubjectEBPFCgroup:
-		config.Subject.SingBoxBinary = options.SingBoxBinary
 		config.Subject.IncludeUID = []uint32{options.WorkerUID}
-		config.Subject.APIListen = netip.AddrPortFrom(loopback, 19091).String()
-		config.Subject.APIToken = "benchmark-" + options.MatrixID
 		if kind == protocol.SubjectEBPFCgroup {
 			config.Subject.CgroupPath = fmt.Sprintf("/sys/fs/cgroup/sbi-%08x", crc32.ChecksumIEEE([]byte(runID)))
 		}

@@ -1,5 +1,5 @@
 {
-  "protocol_version": "inbound-bench/v2",
+  "protocol_version": "inbound-bench/v3",
   "run_id": "tun-auto-redirect-tcp-echo",
   "subject": {
     "kind": "tun-auto-redirect",

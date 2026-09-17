@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["protocol_version", "run_id", "subject", "workload", "execution"],
   "properties": {
-    "protocol_version": { "const": "inbound-bench/v2" },
+    "protocol_version": { "const": "inbound-bench/v3" },
     "run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
     "subject": {
       "type": "object",
@@ -61,7 +61,7 @@
       "required": ["protocol", "mode", "target", "payload_bytes"],
       "properties": {
         "protocol": { "enum": ["tcp", "udp"] },
-        "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short", "idle", "pps"] },
+        "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short", "idle", "pps", "standby"] },
         "target": { "type": "string" },
         "payload_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
         "requests": { "type": "integer", "minimum": 0 },
@@ -69,6 +69,7 @@
         "connections": { "type": "integer", "minimum": 1 },
         "flows": { "type": "integer", "minimum": 1 },
         "offered_pps": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+        "udp_socket_mode": { "enum": ["connected", "unconnected"] },
         "timeout_ms": { "type": "integer", "minimum": 1 }
       },
       "allOf": [
@@ -80,11 +81,15 @@
         },
         {
           "if": { "properties": { "protocol": { "const": "tcp" } }, "required": ["protocol"] },
-          "then": { "properties": { "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short", "idle"] } } }
+          "then": { "properties": { "mode": { "enum": ["echo", "bulk-upload", "bulk-download", "short", "idle", "standby"] } } }
         },
         {
           "if": { "properties": { "protocol": { "const": "udp" } }, "required": ["protocol"] },
-          "then": { "properties": { "mode": { "enum": ["echo", "pps"] } } }
+          "then": { "properties": { "mode": { "enum": ["echo", "pps"] }, "udp_socket_mode": { "enum": ["connected", "unconnected"] } } }
+        },
+        {
+          "if": { "properties": { "protocol": { "const": "tcp" } }, "required": ["protocol"] },
+          "then": { "not": { "required": ["udp_socket_mode"] } }
         },
         {
           "if": { "properties": { "mode": { "const": "pps" } }, "required": ["mode"] },

@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const Version = "inbound-bench/v2"
+const Version = "inbound-bench/v3"
 
 type SubjectKind string
 
@@ -42,13 +42,18 @@ const (
 
 type WorkloadMode string
 
+type UDPSocketMode string
+
 const (
-	ModeEcho         WorkloadMode = "echo"
-	ModeBulkUpload   WorkloadMode = "bulk-upload"
-	ModeBulkDownload WorkloadMode = "bulk-download"
-	ModeShort        WorkloadMode = "short"
-	ModeIdle         WorkloadMode = "idle"
-	ModePPS          WorkloadMode = "pps"
+	ModeEcho             WorkloadMode  = "echo"
+	ModeBulkUpload       WorkloadMode  = "bulk-upload"
+	ModeBulkDownload     WorkloadMode  = "bulk-download"
+	ModeShort            WorkloadMode  = "short"
+	ModeIdle             WorkloadMode  = "idle"
+	ModePPS              WorkloadMode  = "pps"
+	ModeStandby          WorkloadMode  = "standby"
+	UDPSocketConnected   UDPSocketMode = "connected"
+	UDPSocketUnconnected UDPSocketMode = "unconnected"
 )
 
 type Config struct {
@@ -81,16 +86,17 @@ type SubjectConfig struct {
 }
 
 type WorkloadConfig struct {
-	Protocol     WorkloadProtocol `json:"protocol"`
-	Mode         WorkloadMode     `json:"mode"`
-	Target       string           `json:"target"`
-	PayloadBytes int              `json:"payload_bytes"`
-	Requests     int              `json:"requests,omitempty"`
-	DurationMS   int64            `json:"duration_ms,omitempty"`
-	Connections  int              `json:"connections,omitempty"`
-	Flows        int              `json:"flows,omitempty"`
-	OfferedPPS   int              `json:"offered_pps,omitempty"`
-	TimeoutMS    int64            `json:"timeout_ms,omitempty"`
+	Protocol      WorkloadProtocol `json:"protocol"`
+	Mode          WorkloadMode     `json:"mode"`
+	Target        string           `json:"target"`
+	PayloadBytes  int              `json:"payload_bytes"`
+	Requests      int              `json:"requests,omitempty"`
+	DurationMS    int64            `json:"duration_ms,omitempty"`
+	Connections   int              `json:"connections,omitempty"`
+	Flows         int              `json:"flows,omitempty"`
+	OfferedPPS    int              `json:"offered_pps,omitempty"`
+	UDPSocketMode UDPSocketMode    `json:"udp_socket_mode,omitempty"`
+	TimeoutMS     int64            `json:"timeout_ms,omitempty"`
 }
 
 type ExecutionConfig struct {
@@ -194,60 +200,70 @@ type WorkloadResult struct {
 }
 
 type ResourceDelta struct {
-	WallNanoseconds              int64                        `json:"wall_nanoseconds"`
-	ClientUserTicks              uint64                       `json:"client_user_ticks,omitempty"`
-	ClientSystemTicks            uint64                       `json:"client_system_ticks,omitempty"`
-	ClientRunNanoseconds         uint64                       `json:"client_run_nanoseconds,omitempty"`
-	ClientReadBytes              uint64                       `json:"client_read_bytes,omitempty"`
-	ClientWriteBytes             uint64                       `json:"client_write_bytes,omitempty"`
-	ClientRSSBytes               uint64                       `json:"client_rss_bytes,omitempty"`
-	ClientPSSBytes               uint64                       `json:"client_pss_bytes,omitempty"`
-	ClientUSSBytes               uint64                       `json:"client_uss_bytes,omitempty"`
-	ClientHighWaterRSSBytes      uint64                       `json:"client_high_water_rss_bytes,omitempty"`
-	ClientSwapBytes              uint64                       `json:"client_swap_bytes,omitempty"`
-	ClientMinorFaults            uint64                       `json:"client_minor_faults,omitempty"`
-	ClientMajorFaults            uint64                       `json:"client_major_faults,omitempty"`
-	ClientVoluntarySwitches      uint64                       `json:"client_voluntary_switches,omitempty"`
-	ClientInvoluntarySwitches    uint64                       `json:"client_involuntary_switches,omitempty"`
-	ClientThreads                uint64                       `json:"client_threads,omitempty"`
-	ClientFileDescriptors        uint64                       `json:"client_file_descriptors,omitempty"`
-	ClientSocketDescriptors      uint64                       `json:"client_socket_descriptors,omitempty"`
-	SubjectUserTicks             uint64                       `json:"subject_user_ticks,omitempty"`
-	SubjectSystemTicks           uint64                       `json:"subject_system_ticks,omitempty"`
-	SubjectRunNanoseconds        uint64                       `json:"subject_run_nanoseconds,omitempty"`
-	SubjectReadBytes             uint64                       `json:"subject_read_bytes,omitempty"`
-	SubjectWriteBytes            uint64                       `json:"subject_write_bytes,omitempty"`
-	SubjectRSSBytes              uint64                       `json:"subject_rss_bytes,omitempty"`
-	SubjectPSSBytes              uint64                       `json:"subject_pss_bytes,omitempty"`
-	SubjectUSSBytes              uint64                       `json:"subject_uss_bytes,omitempty"`
-	SubjectHighWaterRSSBytes     uint64                       `json:"subject_high_water_rss_bytes,omitempty"`
-	SubjectSwapBytes             uint64                       `json:"subject_swap_bytes,omitempty"`
-	SubjectMinorFaults           uint64                       `json:"subject_minor_faults,omitempty"`
-	SubjectMajorFaults           uint64                       `json:"subject_major_faults,omitempty"`
-	SubjectVoluntarySwitches     uint64                       `json:"subject_voluntary_switches,omitempty"`
-	SubjectInvoluntarySwitches   uint64                       `json:"subject_involuntary_switches,omitempty"`
-	SubjectThreads               uint64                       `json:"subject_threads,omitempty"`
-	SubjectFileDescriptors       uint64                       `json:"subject_file_descriptors,omitempty"`
-	SubjectSocketDescriptors     uint64                       `json:"subject_socket_descriptors,omitempty"`
-	SubjectBPFProgramDescriptors uint64                       `json:"subject_bpf_program_descriptors,omitempty"`
-	SubjectBPFLinkDescriptors    uint64                       `json:"subject_bpf_link_descriptors,omitempty"`
-	SubjectBPFMapMemlockBytes    uint64                       `json:"subject_bpf_map_memlock_bytes,omitempty"`
-	SubjectBPFMaps               []BPFMapCounters             `json:"subject_bpf_maps,omitempty"`
-	SystemCPUTicks               []uint64                     `json:"system_cpu_ticks,omitempty"`
-	SystemCPUByCore              map[string][]uint64          `json:"system_cpu_by_core,omitempty"`
-	SystemSoftIRQs               map[string]uint64            `json:"system_softirqs,omitempty"`
-	SystemContextSwitches        uint64                       `json:"system_context_switches,omitempty"`
-	SystemProcessesCreated       uint64                       `json:"system_processes_created,omitempty"`
-	SystemPageFaults             uint64                       `json:"system_page_faults,omitempty"`
-	SystemMajorPageFaults        uint64                       `json:"system_major_page_faults,omitempty"`
-	SystemMigrations             uint64                       `json:"system_migrations,omitempty"`
-	Interfaces                   map[string]InterfaceCounters `json:"interfaces,omitempty"`
-	ThermalBefore                map[string]int64             `json:"thermal_before_millicelsius,omitempty"`
-	ThermalAfter                 map[string]int64             `json:"thermal_after_millicelsius,omitempty"`
-	CPUFrequencyBefore           map[string]int64             `json:"cpu_frequency_before_khz,omitempty"`
-	CPUFrequencyAfter            map[string]int64             `json:"cpu_frequency_after_khz,omitempty"`
-	ConntrackCountBefore         *uint64                      `json:"conntrack_count_before,omitempty"`
-	ConntrackCountAfter          *uint64                      `json:"conntrack_count_after,omitempty"`
+	WallNanoseconds              int64                           `json:"wall_nanoseconds"`
+	ClientUserTicks              uint64                          `json:"client_user_ticks,omitempty"`
+	ClientSystemTicks            uint64                          `json:"client_system_ticks,omitempty"`
+	ClientRunNanoseconds         uint64                          `json:"client_run_nanoseconds,omitempty"`
+	ClientReadBytes              uint64                          `json:"client_read_bytes,omitempty"`
+	ClientWriteBytes             uint64                          `json:"client_write_bytes,omitempty"`
+	ClientRSSBytes               uint64                          `json:"client_rss_bytes,omitempty"`
+	ClientPSSBytes               uint64                          `json:"client_pss_bytes,omitempty"`
+	ClientUSSBytes               uint64                          `json:"client_uss_bytes,omitempty"`
+	ClientHighWaterRSSBytes      uint64                          `json:"client_high_water_rss_bytes,omitempty"`
+	ClientSwapBytes              uint64                          `json:"client_swap_bytes,omitempty"`
+	ClientMinorFaults            uint64                          `json:"client_minor_faults,omitempty"`
+	ClientMajorFaults            uint64                          `json:"client_major_faults,omitempty"`
+	ClientVoluntarySwitches      uint64                          `json:"client_voluntary_switches,omitempty"`
+	ClientInvoluntarySwitches    uint64                          `json:"client_involuntary_switches,omitempty"`
+	ClientThreads                uint64                          `json:"client_threads,omitempty"`
+	ClientFileDescriptors        uint64                          `json:"client_file_descriptors,omitempty"`
+	ClientSocketDescriptors      uint64                          `json:"client_socket_descriptors,omitempty"`
+	SubjectUserTicks             uint64                          `json:"subject_user_ticks,omitempty"`
+	SubjectSystemTicks           uint64                          `json:"subject_system_ticks,omitempty"`
+	SubjectRunNanoseconds        uint64                          `json:"subject_run_nanoseconds,omitempty"`
+	SubjectReadBytes             uint64                          `json:"subject_read_bytes,omitempty"`
+	SubjectWriteBytes            uint64                          `json:"subject_write_bytes,omitempty"`
+	SubjectRSSBytes              uint64                          `json:"subject_rss_bytes,omitempty"`
+	SubjectPSSBytes              uint64                          `json:"subject_pss_bytes,omitempty"`
+	SubjectUSSBytes              uint64                          `json:"subject_uss_bytes,omitempty"`
+	SubjectHighWaterRSSBytes     uint64                          `json:"subject_high_water_rss_bytes,omitempty"`
+	SubjectSwapBytes             uint64                          `json:"subject_swap_bytes,omitempty"`
+	SubjectMinorFaults           uint64                          `json:"subject_minor_faults,omitempty"`
+	SubjectMajorFaults           uint64                          `json:"subject_major_faults,omitempty"`
+	SubjectVoluntarySwitches     uint64                          `json:"subject_voluntary_switches,omitempty"`
+	SubjectInvoluntarySwitches   uint64                          `json:"subject_involuntary_switches,omitempty"`
+	SubjectThreads               uint64                          `json:"subject_threads,omitempty"`
+	SubjectFileDescriptors       uint64                          `json:"subject_file_descriptors,omitempty"`
+	SubjectSocketDescriptors     uint64                          `json:"subject_socket_descriptors,omitempty"`
+	SubjectBPFProgramDescriptors uint64                          `json:"subject_bpf_program_descriptors,omitempty"`
+	SubjectBPFLinkDescriptors    uint64                          `json:"subject_bpf_link_descriptors,omitempty"`
+	SubjectBPFMapMemlockBytes    uint64                          `json:"subject_bpf_map_memlock_bytes,omitempty"`
+	SubjectBPFMaps               []BPFMapCounters                `json:"subject_bpf_maps,omitempty"`
+	SystemCPUTicks               []uint64                        `json:"system_cpu_ticks,omitempty"`
+	SystemCPUByCore              map[string][]uint64             `json:"system_cpu_by_core,omitempty"`
+	SystemSoftIRQs               map[string]uint64               `json:"system_softirqs,omitempty"`
+	SystemContextSwitches        uint64                          `json:"system_context_switches,omitempty"`
+	SystemProcessesCreated       uint64                          `json:"system_processes_created,omitempty"`
+	SystemPageFaults             uint64                          `json:"system_page_faults,omitempty"`
+	SystemMajorPageFaults        uint64                          `json:"system_major_page_faults,omitempty"`
+	SystemMigrations             uint64                          `json:"system_migrations,omitempty"`
+	Interfaces                   map[string]InterfaceCounters    `json:"interfaces,omitempty"`
+	ThermalBefore                map[string]int64                `json:"thermal_before_millicelsius,omitempty"`
+	ThermalAfter                 map[string]int64                `json:"thermal_after_millicelsius,omitempty"`
+	CPUFrequencyBefore           map[string]int64                `json:"cpu_frequency_before_khz,omitempty"`
+	CPUFrequencyAfter            map[string]int64                `json:"cpu_frequency_after_khz,omitempty"`
+	CPUIdleTime                  map[string]uint64               `json:"cpu_idle_time_microseconds,omitempty"`
+	CPUIdleUsage                 map[string]uint64               `json:"cpu_idle_usage,omitempty"`
+	WakeupSources                map[string]WakeupSourceCounters `json:"wakeup_sources,omitempty"`
+	ConntrackCountBefore         *uint64                         `json:"conntrack_count_before,omitempty"`
+	ConntrackCountAfter          *uint64                         `json:"conntrack_count_after,omitempty"`
+}
+
+type WakeupSourceCounters struct {
+	EventCount         uint64 `json:"event_count"`
+	WakeupCount        uint64 `json:"wakeup_count"`
+	TotalTime          uint64 `json:"total_time"`
+	PreventSuspendTime uint64 `json:"prevent_suspend_time"`
 }
 
 type BPFMapCounters struct {
@@ -272,23 +288,29 @@ type InterfaceCounters struct {
 }
 
 type Repetition struct {
-	ProtocolVersion string           `json:"protocol_version"`
-	RunID           string           `json:"run_id"`
-	Subject         SubjectKind      `json:"subject"`
-	Index           int              `json:"index"`
-	Warmup          bool             `json:"warmup"`
-	StartedAt       time.Time        `json:"started_at"`
-	DurationNS      int64            `json:"duration_ns"`
-	Counters        Counters         `json:"counters"`
-	LatencyNS       []int64          `json:"latency_ns,omitempty"`
-	Worker          *WorkerIdentity  `json:"worker,omitempty"`
-	WorkloadTiming  *WorkloadTiming  `json:"workload_timing,omitempty"`
-	Resources       ResourceDelta    `json:"resources"`
-	PathProof       PathProof        `json:"path_proof"`
-	Validity        Validity         `json:"validity"`
-	Execution       ExecutionTrace   `json:"execution"`
-	Artifacts       []ArtifactRecord `json:"artifacts,omitempty"`
-	Metadata        json.RawMessage  `json:"metadata,omitempty"`
+	ProtocolVersion string              `json:"protocol_version"`
+	RunID           string              `json:"run_id"`
+	Subject         SubjectKind         `json:"subject"`
+	Index           int                 `json:"index"`
+	Warmup          bool                `json:"warmup"`
+	StartedAt       time.Time           `json:"started_at"`
+	DurationNS      int64               `json:"duration_ns"`
+	Counters        Counters            `json:"counters"`
+	LatencyNS       []int64             `json:"latency_ns,omitempty"`
+	Worker          *WorkerIdentity     `json:"worker,omitempty"`
+	WorkloadTiming  *WorkloadTiming     `json:"workload_timing,omitempty"`
+	Resources       ResourceDelta       `json:"resources"`
+	Runtime         *RuntimeDiagnostics `json:"runtime_diagnostics,omitempty"`
+	PathProof       PathProof           `json:"path_proof"`
+	Validity        Validity            `json:"validity"`
+	Execution       ExecutionTrace      `json:"execution"`
+	Artifacts       []ArtifactRecord    `json:"artifacts,omitempty"`
+	Metadata        json.RawMessage     `json:"metadata,omitempty"`
+}
+
+type RuntimeDiagnostics struct {
+	Before json.RawMessage `json:"before"`
+	After  json.RawMessage `json:"after"`
 }
 
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -308,6 +330,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Workload.TimeoutMS == 0 {
 		c.Workload.TimeoutMS = 2_000
+	}
+	if c.Workload.Protocol == ProtocolUDP && c.Workload.UDPSocketMode == "" {
+		c.Workload.UDPSocketMode = UDPSocketConnected
 	}
 	if c.Execution.Repetitions == 0 {
 		c.Execution.Repetitions = 5
@@ -363,6 +388,13 @@ func (c Config) Validate() error {
 	}
 	if c.Workload.Protocol == ProtocolUDP && c.Workload.PayloadBytes+40 > 65_507 {
 		errs = append(errs, errors.New("UDP payload plus 40-byte benchmark header exceeds 65507 bytes"))
+	}
+	if c.Workload.Protocol == ProtocolUDP {
+		if c.Workload.UDPSocketMode != "" && c.Workload.UDPSocketMode != UDPSocketConnected && c.Workload.UDPSocketMode != UDPSocketUnconnected {
+			errs = append(errs, fmt.Errorf("unsupported UDP socket mode %q", c.Workload.UDPSocketMode))
+		}
+	} else if c.Workload.UDPSocketMode != "" {
+		errs = append(errs, errors.New("udp_socket_mode is only valid for UDP workloads"))
 	}
 	if c.Workload.Requests < 0 || c.Workload.DurationMS < 0 || c.Workload.OfferedPPS < 0 {
 		errs = append(errs, errors.New("requests, duration_ms and offered_pps cannot be negative"))
@@ -509,7 +541,7 @@ func hostIsLoopback(address string) bool {
 func validateMode(network WorkloadProtocol, mode WorkloadMode) error {
 	switch network {
 	case ProtocolTCP:
-		if mode == ModeEcho || mode == ModeBulkUpload || mode == ModeBulkDownload || mode == ModeShort || mode == ModeIdle {
+		if mode == ModeEcho || mode == ModeBulkUpload || mode == ModeBulkDownload || mode == ModeShort || mode == ModeIdle || mode == ModeStandby {
 			return nil
 		}
 	case ProtocolUDP:

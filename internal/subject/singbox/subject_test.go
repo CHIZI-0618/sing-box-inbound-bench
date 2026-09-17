@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/CHIZI-0618/sing-box-inbound-bench/internal/protocol"
@@ -27,7 +24,7 @@ func TestOwnedRunDirectory(t *testing.T) {
 }
 
 func TestValidateEBPFDiagnostics(t *testing.T) {
-	data := []byte(`{"ebpf":[{"tag":"benchmark-ebpf-in","state":"normal","local_enabled":true,"local_data_plane":"cgroup","attachments":[{"interface_name":"/sys/fs/cgroup/bench","role":"local","mechanism":"cgroup"}]}]}`)
+	data := []byte(`{"inbounds":[{"tag":"benchmark-ebpf-in","state":"normal","localEnabled":true,"localDataPlane":"cgroup","attachments":[{"interfaceName":"/sys/fs/cgroup/bench","role":"local","mechanism":"cgroup"}],"counters":{},"udpNAT":{}}],"kernelRuntime":{"mapOccupancy":{"status":"available"}}}`)
 	valid, message, err := validateEBPFDiagnostics(data, protocol.SubjectConfig{Kind: protocol.SubjectEBPFCgroup, CgroupPath: "/sys/fs/cgroup/bench"})
 	if err != nil || !valid || message != "" {
 		t.Fatalf("valid=%t message=%q err=%v", valid, message, err)
@@ -38,6 +35,15 @@ func TestValidateEBPFDiagnostics(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeDiagnosticsRejectsFailureDelta(t *testing.T) {
+	before := []byte(`{"inbounds":[{"tag":"benchmark-ebpf-in","state":"normal","localEnabled":true,"localDataPlane":"tc","attachments":[{"interfaceName":"eth0","role":"local","mechanism":"tcx"}],"counters":{"assignmentLookupFailures":"1"},"udpNAT":{}}]}`)
+	after := []byte(`{"inbounds":[{"tag":"benchmark-ebpf-in","state":"normal","localEnabled":true,"localDataPlane":"tc","attachments":[{"interfaceName":"eth0","role":"local","mechanism":"tcx"}],"counters":{"assignmentLookupFailures":"2"},"udpNAT":{}}]}`)
+	managed := New(protocol.Config{Subject: protocol.SubjectConfig{Kind: protocol.SubjectEBPFTC, OutboundInterface: "eth0"}}, nil)
+	if err := managed.ValidateRuntimeDiagnostics(before, after); err == nil {
+		t.Fatal("accepted an eBPF failure counter increase")
+	}
+}
+
 type fakeRunner struct {
 	runs   [][]string
 	starts [][]string
@@ -45,7 +51,13 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Run(_ context.Context, name string, arguments ...string) ([]byte, error) {
 	f.runs = append(f.runs, append([]string{name}, arguments...))
-	return []byte(`{"probe":"ok"}`), nil
+	if len(arguments) > 0 && arguments[0] == "tools" {
+		return []byte(`{"probe":"ok"}`), nil
+	}
+	if len(arguments) > 0 && arguments[0] == "api" {
+		return []byte(`{"inbounds":[{"tag":"benchmark-ebpf-in","state":"normal","localEnabled":true,"localDataPlane":"tc","attachments":[{"interfaceName":"eth0","role":"local","mechanism":"tcx"}],"counters":{},"udpNAT":{}}]}`), nil
+	}
+	return nil, nil
 }
 
 func (f *fakeRunner) Start(name string, arguments []string, _, _ io.Writer) (Process, error) {
@@ -71,13 +83,6 @@ func (p *fakeProcess) Kill() error        { return p.Signal(os.Kill) }
 func (p *fakeProcess) Done() <-chan error { return p.done }
 
 func TestManagedEBPFDryRunLifecycle(t *testing.T) {
-	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer secret" {
-			t.Error("missing API authorization")
-		}
-		_, _ = writer.Write([]byte(`{"ebpf":[{"tag":"benchmark-ebpf-in","state":"normal","local_enabled":true,"local_data_plane":"tc","attachments":[{"interface_name":"eth0","role":"local","mechanism":"tcx"}]}]}`))
-	}))
-	defer api.Close()
 	binary := t.TempDir() + "/sing-box"
 	if err := os.WriteFile(binary, []byte("fake"), 0o700); err != nil {
 		t.Fatal(err)
@@ -85,7 +90,7 @@ func TestManagedEBPFDryRunLifecycle(t *testing.T) {
 	config := protocol.Config{
 		ProtocolVersion: protocol.Version, RunID: "dry-run", Subject: protocol.SubjectConfig{
 			Kind: protocol.SubjectEBPFTC, SingBoxBinary: binary, OutboundInterface: "eth0", IncludeUID: []uint32{2000},
-			APIListen: strings.TrimPrefix(api.URL, "http://"), APIToken: "secret",
+			APIListen: "127.0.0.1:19091", APIToken: "secret",
 		},
 		Execution: protocol.ExecutionConfig{TemporaryDirectory: t.TempDir(), StartupTimeoutMS: 1000},
 		Workload:  protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP, Target: "192.0.2.1:9000"},
@@ -105,11 +110,14 @@ func TestManagedEBPFDryRunLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands.runs) != 2 || len(commands.starts) != 1 {
+	if len(commands.runs) != 4 || len(commands.starts) != 1 {
 		t.Fatalf("runs=%v starts=%v", commands.runs, commands.starts)
 	}
-	if commands.runs[0][1] != "tools" || commands.runs[1][1] != "check" {
+	if commands.runs[0][1] != "tools" || commands.runs[1][1] != "check" || commands.runs[2][1] != "api" || commands.runs[3][1] != "api" {
 		t.Fatalf("runs=%v", commands.runs)
+	}
+	if got := commands.runs[2]; len(got) < 7 || got[2] != "--url" || got[4] != "--secret" || got[6] != "ebpf" {
+		t.Fatalf("api command=%v", got)
 	}
 }
 

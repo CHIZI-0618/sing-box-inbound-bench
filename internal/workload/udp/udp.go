@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"math"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,7 @@ type ClientConfig struct {
 	Duration     time.Duration
 	Flows        int
 	OfferedPPS   int
+	SocketMode   protocol.UDPSocketMode
 	Timeout      time.Duration
 	RunHash      uint32
 	CollectProof bool
@@ -113,6 +115,9 @@ func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadRes
 	}
 	if config.Mode == "" {
 		config.Mode = protocol.ModeEcho
+	}
+	if config.SocketMode == "" {
+		config.SocketMode = protocol.UDPSocketConnected
 	}
 	if config.Mode == protocol.ModePPS {
 		return runPPS(ctx, config, startedAt)
@@ -172,7 +177,7 @@ func (c *atomicCounters) snapshot() protocol.Counters {
 }
 
 func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) error {
-	connection, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "udp", config.Target)
+	connection, err := dialUDPFlow(ctx, config.Target, config.SocketMode, config.Timeout)
 	if err != nil {
 		return err
 	}
@@ -235,7 +240,7 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 			if decodeErr != nil {
 				return decodeErr
 			}
-			clientLocal, canonicalErr := protocol.CanonicalEndpoint(connection.LocalAddr().String())
+			clientLocal, canonicalErr := effectiveLocalEndpoint(ctx, connection, config.Target, config.Timeout)
 			if canonicalErr != nil {
 				return canonicalErr
 			}
@@ -245,6 +250,27 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 		counters.operations.Add(1)
 	}
 	return nil
+}
+
+func effectiveLocalEndpoint(ctx context.Context, connection net.Conn, target string, timeout time.Duration) (string, error) {
+	local, err := netip.ParseAddrPort(connection.LocalAddr().String())
+	if err != nil {
+		return "", err
+	}
+	if !local.Addr().IsUnspecified() {
+		return protocol.CanonicalEndpoint(local.String())
+	}
+	probe, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "udp", target)
+	if err != nil {
+		return "", fmt.Errorf("resolve effective unconnected UDP source: %w", err)
+	}
+	probeLocal, parseErr := netip.ParseAddrPort(probe.LocalAddr().String())
+	closeErr := probe.Close()
+	if parseErr != nil || closeErr != nil {
+		return "", errors.Join(parseErr, closeErr)
+	}
+	effective := netip.AddrPortFrom(probeLocal.Addr(), local.Port())
+	return protocol.CanonicalEndpoint(effective.String())
 }
 
 type ppsFlow struct {
@@ -267,7 +293,7 @@ func runPPS(ctx context.Context, config ClientConfig, startedAt time.Time) (prot
 	}
 	flows := make([]ppsFlow, config.Flows)
 	for flow := range flows {
-		connection, dialErr := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "udp", config.Target)
+		connection, dialErr := dialUDPFlow(ctx, config.Target, config.SocketMode, config.Timeout)
 		if dialErr != nil {
 			closePPSFlows(flows)
 			return protocol.WorkloadResult{}, dialErr
@@ -346,6 +372,52 @@ func runPPS(ctx context.Context, config ClientConfig, startedAt time.Time) (prot
 		Counters: counters.snapshot(), LatencyNS: joinPPSLatencies(flows),
 		Timing: protocol.WorkloadTiming{StartedAt: startedAt, SetupDurationNS: clockBase.Sub(startedAt).Nanoseconds(), ActiveDurationNS: activeFinishedAt.Sub(clockBase).Nanoseconds(), DrainDurationNS: finishedAt.Sub(activeFinishedAt).Nanoseconds(), FinishedAt: finishedAt},
 	}, counters.err()
+}
+
+type unconnectedUDPConn struct {
+	net.PacketConn
+	target net.Addr
+}
+
+func (c *unconnectedUDPConn) Read(buffer []byte) (int, error) {
+	length, source, err := c.PacketConn.ReadFrom(buffer)
+	if err != nil {
+		return 0, err
+	}
+	if source.String() != c.target.String() {
+		return 0, fmt.Errorf("unexpected UDP response source %s, want %s", source, c.target)
+	}
+	return length, nil
+}
+
+func (c *unconnectedUDPConn) Write(buffer []byte) (int, error) {
+	return c.PacketConn.WriteTo(buffer, c.target)
+}
+
+func (c *unconnectedUDPConn) RemoteAddr() net.Addr { return c.target }
+
+func dialUDPFlow(ctx context.Context, target string, mode protocol.UDPSocketMode, timeout time.Duration) (net.Conn, error) {
+	if mode == protocol.UDPSocketConnected {
+		return (&net.Dialer{Timeout: timeout}).DialContext(ctx, "udp", target)
+	}
+	if mode != protocol.UDPSocketUnconnected {
+		return nil, fmt.Errorf("unsupported UDP socket mode %q", mode)
+	}
+	remote, err := net.ResolveUDPAddr("udp", target)
+	if err != nil {
+		return nil, err
+	}
+	network := "udp4"
+	listenAddress := "0.0.0.0:0"
+	if remote.IP.To4() == nil {
+		network = "udp6"
+		listenAddress = "[::]:0"
+	}
+	connection, err := (&net.ListenConfig{}).ListenPacket(ctx, network, listenAddress)
+	if err != nil {
+		return nil, err
+	}
+	return &unconnectedUDPConn{PacketConn: connection, target: remote}, nil
 }
 
 func receivePPSFlow(config ClientConfig, flow int, clockBase time.Time, state *ppsFlow, counters *atomicCounters) error {

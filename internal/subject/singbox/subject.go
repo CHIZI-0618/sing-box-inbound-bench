@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -41,7 +40,6 @@ type Managed struct {
 	processExit  error
 	configHash   string
 	kernelProbe  json.RawMessage
-	httpClient   *http.Client
 	netfilter    *netfilter.Manager
 	cgroupOwned  bool
 }
@@ -50,7 +48,7 @@ func New(config protocol.Config, runner CommandRunner) *Managed {
 	if runner == nil {
 		runner = OSCommandRunner{}
 	}
-	return &Managed{Config: config, Runner: runner, FindProcesses: subject.FindProcesses, ReadInterface: netdev.Read, HasSocket: netdev.HasListeningSocket, httpClient: &http.Client{Timeout: 2 * time.Second}}
+	return &Managed{Config: config, Runner: runner, FindProcesses: subject.FindProcesses, ReadInterface: netdev.Read, HasSocket: netdev.HasListeningSocket}
 }
 
 func (m *Managed) Kind() protocol.SubjectKind { return m.Config.Subject.Kind }
@@ -441,30 +439,19 @@ func (m *Managed) observeTun(ctx context.Context) (subject.Observation, error) {
 }
 
 func (m *Managed) observeEBPFOnce(ctx context.Context) (subject.Observation, bool, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+m.Config.Subject.APIListen+"/ebpf/", nil)
-	if err != nil {
-		return subject.Observation{}, false, err
-	}
+	arguments := []string{"api", "--url", m.Config.Subject.APIListen}
 	if m.Config.Subject.APIToken != "" {
-		request.Header.Set("Authorization", "Bearer "+m.Config.Subject.APIToken)
+		arguments = append(arguments, "--secret", m.Config.Subject.APIToken)
 	}
-	response, err := m.httpClient.Do(request)
+	arguments = append(arguments, "ebpf")
+	data, err := m.Runner.Run(ctx, m.Config.Subject.SingBoxBinary, arguments...)
 	if err != nil {
-		return subject.Observation{}, true, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return subject.Observation{}, false, fmt.Errorf("eBPF diagnostics returned %s: %s", response.Status, bytes.TrimSpace(body))
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return subject.Observation{}, false, err
+		return subject.Observation{}, true, fmt.Errorf("query sing-box eBPF API: %w: %s", err, bytes.TrimSpace(data))
 	}
 	if !json.Valid(data) {
 		return subject.Observation{}, false, errors.New("eBPF diagnostics returned invalid JSON")
 	}
-	return subject.Observation{CapturedAt: time.Now(), Data: data}, false, nil
+	return subject.Observation{CapturedAt: time.Now(), Data: bytes.TrimSpace(data)}, false, nil
 }
 
 func (m *Managed) ProvePath(_ context.Context, before, after subject.Observation, warmup subject.WarmupEvidence) (protocol.PathProof, error) {
@@ -731,53 +718,4 @@ func (m *Managed) exited() bool {
 	default:
 		return false
 	}
-}
-
-type diagnosticsEnvelope struct {
-	EBPF []struct {
-		Tag            string `json:"tag"`
-		State          string `json:"state"`
-		LocalEnabled   bool   `json:"local_enabled"`
-		LocalDataPlane string `json:"local_data_plane"`
-		Attachments    []struct {
-			InterfaceName string `json:"interface_name"`
-			Role          string `json:"role"`
-			Mechanism     string `json:"mechanism"`
-		} `json:"attachments"`
-	} `json:"ebpf"`
-}
-
-func validateEBPFDiagnostics(data []byte, config protocol.SubjectConfig) (bool, string, error) {
-	var diagnostics diagnosticsEnvelope
-	if err := json.Unmarshal(data, &diagnostics); err != nil {
-		return false, "", err
-	}
-	wantPlane := "tc"
-	if config.Kind == protocol.SubjectEBPFCgroup {
-		wantPlane = "cgroup"
-	}
-	for _, inbound := range diagnostics.EBPF {
-		if inbound.Tag != "benchmark-ebpf-in" {
-			continue
-		}
-		if inbound.State != "normal" || !inbound.LocalEnabled || inbound.LocalDataPlane != wantPlane {
-			return false, fmt.Sprintf("runtime state=%s local=%t plane=%s", inbound.State, inbound.LocalEnabled, inbound.LocalDataPlane), nil
-		}
-		for _, attachment := range inbound.Attachments {
-			if attachment.Role != "local" {
-				continue
-			}
-			if wantPlane == "cgroup" {
-				if attachment.Mechanism == "cgroup" && filepath.Clean(attachment.InterfaceName) == filepath.Clean(config.CgroupPath) {
-					return true, "", nil
-				}
-				continue
-			}
-			if attachment.Mechanism != "" && attachment.Mechanism != "cgroup" && (config.OutboundInterface == "" || attachment.InterfaceName == config.OutboundInterface) {
-				return true, "", nil
-			}
-		}
-		return false, "no matching local attachment", nil
-	}
-	return false, "benchmark eBPF inbound missing from diagnostics", nil
 }

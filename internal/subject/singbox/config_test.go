@@ -37,12 +37,23 @@ func TestGenerateEBPFConfigs(t *testing.T) {
 					t.Fatal("TC config contains cgroup_path")
 				}
 			}
+			services := decoded["services"].([]any)
+			if len(services) != 1 {
+				t.Fatalf("services=%v", services)
+			}
+			api := services[0].(map[string]any)
+			if api["type"] != "api" || api["listen"] != "127.0.0.1" || api["listen_port"] != float64(9090) {
+				t.Fatalf("api=%v", api)
+			}
+			if _, exists := decoded["experimental"]; exists {
+				t.Fatal("eBPF benchmark config still contains experimental API configuration")
+			}
 		})
 	}
 }
 
 func TestGenerateDirectConfig(t *testing.T) {
-	config := protocol.Config{Subject: protocol.SubjectConfig{Kind: protocol.SubjectDirect, Listen: "127.0.0.1:18080", Target: "192.0.2.1:9000"}, Workload: protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP}}
+	config := protocol.Config{Subject: protocol.SubjectConfig{Kind: protocol.SubjectDirect, Listen: "127.0.0.1:18080", Target: "192.0.2.1:9000", APIListen: "127.0.0.1:9090", APIToken: "secret"}, Workload: protocol.WorkloadConfig{Protocol: protocol.ProtocolTCP}}
 	content, err := GenerateConfig(config)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +65,10 @@ func TestGenerateDirectConfig(t *testing.T) {
 	inbound := decoded["inbounds"].([]any)[0].(map[string]any)
 	if inbound["override_address"] != "192.0.2.1" || inbound["override_port"] != float64(9000) {
 		t.Fatalf("inbound=%v", inbound)
+	}
+	services := decoded["services"].([]any)
+	if len(services) != 1 || services[0].(map[string]any)["type"] != "api" {
+		t.Fatalf("services=%v", services)
 	}
 }
 

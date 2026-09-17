@@ -11,10 +11,10 @@ import (
 )
 
 type generatedConfig struct {
-	Log          map[string]any `json:"log"`
-	Inbounds     []any          `json:"inbounds"`
-	Outbounds    []any          `json:"outbounds"`
-	Experimental map[string]any `json:"experimental,omitempty"`
+	Log       map[string]any `json:"log"`
+	Inbounds  []any          `json:"inbounds"`
+	Outbounds []any          `json:"outbounds"`
+	Services  []any          `json:"services,omitempty"`
 }
 
 func GenerateConfig(config protocol.Config) ([]byte, error) {
@@ -102,9 +102,18 @@ func GenerateConfig(config protocol.Config) ([]byte, error) {
 		if config.Subject.APIListen == "" {
 			return nil, fmt.Errorf("api_listen is required for eBPF path proof")
 		}
-		generated.Experimental = map[string]any{"clash_api": map[string]any{"external_controller": config.Subject.APIListen, "secret": config.Subject.APIToken}}
 	default:
 		return nil, fmt.Errorf("unsupported sing-box subject %q", config.Subject.Kind)
+	}
+	if config.Subject.APIListen != "" {
+		apiHost, apiPort, err := splitAddress(config.Subject.APIListen)
+		if err != nil {
+			return nil, fmt.Errorf("api_listen: %w", err)
+		}
+		generated.Services = []any{map[string]any{
+			"type": "api", "tag": "benchmark-api", "listen": apiHost, "listen_port": apiPort,
+			"secret": config.Subject.APIToken,
+		}}
 	}
 	return json.MarshalIndent(generated, "", "  ")
 }

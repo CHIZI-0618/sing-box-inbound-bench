@@ -29,6 +29,10 @@ type CaseSummary struct {
 	SubjectPSSBytes        float64                 `json:"subject_pss_bytes_median,omitempty"`
 	SubjectUSSBytes        float64                 `json:"subject_uss_bytes_median,omitempty"`
 	SubjectBPFMemlockBytes float64                 `json:"subject_bpf_map_memlock_bytes_median,omitempty"`
+	SystemContextSwitches  float64                 `json:"system_context_switches_per_second_median,omitempty"`
+	CPUIdleTransitions     float64                 `json:"cpu_idle_transitions_per_second_median,omitempty"`
+	WakeupSourceEvents     float64                 `json:"wakeup_source_events_per_second_median,omitempty"`
+	WakeupCount            float64                 `json:"wakeup_count_per_second_median,omitempty"`
 	RelativeRawPercent     float64                 `json:"relative_raw_percent,omitempty"`
 	RelativeDirectPercent  float64                 `json:"relative_direct_percent,omitempty"`
 	Statistics             map[string]Distribution `json:"statistics,omitempty"`
@@ -60,6 +64,7 @@ type Summary struct {
 
 type caseValues struct {
 	ops, bits, clientCPU, subjectCPU, cpuGiB, rss, pss, uss, bpf []float64
+	contextSwitches, idleTransitions, wakeupEvents, wakeupCount  []float64
 	latency                                                      []int64
 	valid, invalid                                               int
 }
@@ -178,6 +183,21 @@ func appendRepetition(value *caseValues, repetition protocol.Repetition, config 
 		value.bits = append(value.bits, deliveredBitsPerSecond(repetition, config))
 		value.clientCPU = append(value.clientCPU, float64(repetition.Resources.ClientRunNanoseconds)/float64(repetition.DurationNS))
 		value.subjectCPU = append(value.subjectCPU, float64(repetition.Resources.SubjectRunNanoseconds)/float64(repetition.DurationNS))
+		seconds := float64(repetition.DurationNS) / 1e9
+		value.contextSwitches = append(value.contextSwitches, float64(repetition.Resources.SystemContextSwitches)/seconds)
+		if len(repetition.Resources.CPUIdleUsage) > 0 {
+			value.idleTransitions = append(value.idleTransitions, float64(sumUint64Map(repetition.Resources.CPUIdleUsage))/seconds)
+		}
+		if len(repetition.Resources.WakeupSources) > 0 {
+			var wakeupEvents uint64
+			var wakeupCount uint64
+			for _, counters := range repetition.Resources.WakeupSources {
+				wakeupEvents += counters.EventCount
+				wakeupCount += counters.WakeupCount
+			}
+			value.wakeupEvents = append(value.wakeupEvents, float64(wakeupEvents)/seconds)
+			value.wakeupCount = append(value.wakeupCount, float64(wakeupCount)/seconds)
+		}
 		if delivered := deliveredBytes(repetition, config); delivered > 0 {
 			value.cpuGiB = append(value.cpuGiB, float64(repetition.Resources.SubjectRunNanoseconds)/1e9/(float64(delivered)/(1<<30)))
 		}
@@ -204,21 +224,29 @@ func summarizeCase(config protocol.Config, value *caseValues) CaseSummary {
 	item.SubjectPSSBytes = median(value.pss)
 	item.SubjectUSSBytes = median(value.uss)
 	item.SubjectBPFMemlockBytes = median(value.bpf)
+	item.SystemContextSwitches = median(value.contextSwitches)
+	item.CPUIdleTransitions = median(value.idleTransitions)
+	item.WakeupSourceEvents = median(value.wakeupEvents)
+	item.WakeupCount = median(value.wakeupCount)
 	item.LatencyP50NS = percentile(value.latency, 0.50)
 	item.LatencyP95NS = percentile(value.latency, 0.95)
 	item.LatencyP99NS = percentile(value.latency, 0.99)
 	item.LatencyP999NS = percentile(value.latency, 0.999)
 	item.Statistics = map[string]Distribution{
-		"operations_per_second":         distribution(value.ops),
-		"delivered_bits_per_second":     distribution(value.bits),
-		"client_cpu_cores":              distribution(value.clientCPU),
-		"subject_cpu_cores":             distribution(value.subjectCPU),
-		"subject_cpu_seconds_per_gib":   distribution(value.cpuGiB),
-		"subject_rss_bytes":             distribution(value.rss),
-		"subject_pss_bytes":             distribution(value.pss),
-		"subject_uss_bytes":             distribution(value.uss),
-		"subject_bpf_map_memlock_bytes": distribution(value.bpf),
+		"operations_per_second":              distribution(value.ops),
+		"delivered_bits_per_second":          distribution(value.bits),
+		"client_cpu_cores":                   distribution(value.clientCPU),
+		"subject_cpu_cores":                  distribution(value.subjectCPU),
+		"subject_cpu_seconds_per_gib":        distribution(value.cpuGiB),
+		"subject_rss_bytes":                  distribution(value.rss),
+		"subject_pss_bytes":                  distribution(value.pss),
+		"subject_uss_bytes":                  distribution(value.uss),
+		"subject_bpf_map_memlock_bytes":      distribution(value.bpf),
+		"system_context_switches_per_second": distribution(value.contextSwitches),
 	}
+	addDistribution(item.Statistics, "cpu_idle_transitions_per_second", value.idleTransitions)
+	addDistribution(item.Statistics, "wakeup_source_events_per_second", value.wakeupEvents)
+	addDistribution(item.Statistics, "wakeup_count_per_second", value.wakeupCount)
 	return item
 }
 
@@ -263,8 +291,22 @@ func deliveredBitsPerSecond(repetition protocol.Repetition, config protocol.Conf
 }
 
 func workloadKey(workload protocol.WorkloadConfig) string {
-	return fmt.Sprintf("%s/%s/%d/%d/%d/%d/%d/%d", workload.Protocol, workload.Mode, workload.PayloadBytes,
+	return fmt.Sprintf("%s/%s/%s/%d/%d/%d/%d/%d/%d", workload.Protocol, workload.Mode, workload.UDPSocketMode, workload.PayloadBytes,
 		workload.Requests, workload.DurationMS, workload.Connections, workload.Flows, workload.OfferedPPS)
+}
+
+func sumUint64Map(values map[string]uint64) uint64 {
+	var result uint64
+	for _, value := range values {
+		result += value
+	}
+	return result
+}
+
+func addDistribution(target map[string]Distribution, name string, values []float64) {
+	if len(values) > 0 {
+		target[name] = distribution(values)
+	}
 }
 
 func median(values []float64) float64 {
