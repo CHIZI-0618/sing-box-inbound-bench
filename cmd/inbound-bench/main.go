@@ -91,6 +91,7 @@ func run(arguments []string) error {
 		results := flags.String("results", "results", "result directory")
 		singBox := flags.String("sing-box", "", "sing-box binary path on the benchmark device")
 		target := flags.String("target", "", "TCP/UDP benchmark server IP:port")
+		rawTarget := flags.String("raw-target", "", "physical server IP:port for raw cases when target translation is used")
 		outboundInterface := flags.String("interface", "", "physical benchmark interface")
 		workerUID := flags.Uint("worker-uid", 2000, "dedicated benchmark worker UID")
 		seed := flags.Int64("seed", 20260915, "randomization seed")
@@ -109,7 +110,7 @@ func run(arguments []string) error {
 			return errors.New("worker UID exceeds uint32")
 		}
 		matrix, err := suite.Generate(suite.Options{
-			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target,
+			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target, RawTarget: *rawTarget,
 			OutboundInterface: *outboundInterface, WorkerUID: uint32(*workerUID), Seed: *seed,
 			WarmupRepetitions: *warmups, Repetitions: *repetitions, Duration: *duration,
 			IdleDuration: *idleDuration, UDPPPS: *udpPPS, Preset: *preset,

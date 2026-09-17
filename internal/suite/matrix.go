@@ -15,6 +15,7 @@ type Options struct {
 	OutputDirectory   string
 	SingBoxBinary     string
 	Target            string
+	RawTarget         string
 	OutboundInterface string
 	WorkerUID         uint32
 	Seed              int64
@@ -59,6 +60,16 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 	if options.OutputDirectory == "" || options.SingBoxBinary == "" || options.OutboundInterface == "" {
 		return protocol.MatrixConfig{}, errors.New("output directory, sing-box binary and outbound interface are required")
 	}
+	rawTarget := target
+	if options.RawTarget != "" {
+		rawTarget, err = netip.ParseAddrPort(options.RawTarget)
+		if err != nil {
+			return protocol.MatrixConfig{}, fmt.Errorf("raw target: %w", err)
+		}
+		if rawTarget.Addr().Is6() != target.Addr().Is6() {
+			return protocol.MatrixConfig{}, errors.New("target and raw target must use the same address family")
+		}
+	}
 	templates, err := workloads(options, target.String())
 	if err != nil {
 		return protocol.MatrixConfig{}, err
@@ -76,7 +87,12 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 			if kind == protocol.SubjectRedirect && template.config.Protocol == protocol.ProtocolUDP {
 				continue
 			}
-			config := buildConfig(options, target, kind, template)
+			configTarget := target
+			if kind == protocol.SubjectRaw {
+				configTarget = rawTarget
+				template.config.Target = rawTarget.String()
+			}
+			config := buildConfig(options, configTarget, kind, template)
 			config.ApplyDefaults()
 			if err = config.Validate(); err != nil {
 				return protocol.MatrixConfig{}, fmt.Errorf("generated case %s: %w", config.RunID, err)
@@ -84,8 +100,8 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 			matrix.Cases = append(matrix.Cases, config)
 		}
 	}
-	control := buildConfig(options, target, protocol.SubjectRaw, workloadTemplate{name: "control", config: protocol.WorkloadConfig{
-		Protocol: protocol.ProtocolTCP, Mode: protocol.ModeBulkUpload, Target: target.String(), PayloadBytes: 64 << 10,
+	control := buildConfig(options, rawTarget, protocol.SubjectRaw, workloadTemplate{name: "control", config: protocol.WorkloadConfig{
+		Protocol: protocol.ProtocolTCP, Mode: protocol.ModeBulkUpload, Target: rawTarget.String(), PayloadBytes: 64 << 10,
 		DurationMS: options.Duration, Connections: 1, Flows: 1, TimeoutMS: 2_000,
 	}})
 	control.RunID = "raw-control"

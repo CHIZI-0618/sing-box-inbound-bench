@@ -96,3 +96,17 @@ func TestGenerateRejectsInvalidMatrixID(t *testing.T) {
 		t.Fatal("accepted invalid matrix ID")
 	}
 }
+
+func TestGenerateUsesPhysicalTargetForRawCases(t *testing.T) {
+	matrix, err := Generate(Options{
+		MatrixID: "translated", OutputDirectory: "results", SingBoxBinary: "/tmp/sing-box",
+		Target: "198.18.0.1:19090", RawTarget: "10.212.17.63:19090", OutboundInterface: "wlan0", WorkerUID: 2000,
+		Preset: PresetSmoke, Subjects: []protocol.SubjectKind{protocol.SubjectRaw, protocol.SubjectTunAuto}, Workloads: []string{"udp-rtt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matrix.RawControl.Workload.Target != "10.212.17.63:19090" || matrix.Cases[0].Workload.Target != "10.212.17.63:19090" || matrix.Cases[1].Workload.Target != "198.18.0.1:19090" {
+		t.Fatalf("control=%s raw=%s translated=%s", matrix.RawControl.Workload.Target, matrix.Cases[0].Workload.Target, matrix.Cases[1].Workload.Target)
+	}
+}

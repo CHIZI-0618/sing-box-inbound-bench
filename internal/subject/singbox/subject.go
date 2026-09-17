@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +31,7 @@ type Managed struct {
 	Runner        CommandRunner
 	FindProcesses func([]string) ([]string, error)
 	ReadInterface func(string) (netdev.Stats, error)
+	ReadPrefixes  func(string) ([]netip.Prefix, error)
 	HasSocket     func(string, uint16, bool) (bool, error)
 
 	runDirectory string
@@ -47,7 +50,7 @@ func New(config protocol.Config, runner CommandRunner) *Managed {
 	if runner == nil {
 		runner = OSCommandRunner{}
 	}
-	return &Managed{Config: config, Runner: runner, FindProcesses: subject.FindProcesses, ReadInterface: netdev.Read, HasSocket: netdev.HasListeningSocket}
+	return &Managed{Config: config, Runner: runner, FindProcesses: subject.FindProcesses, ReadInterface: netdev.Read, ReadPrefixes: interfacePrefixes, HasSocket: netdev.HasListeningSocket}
 }
 
 func (m *Managed) Kind() protocol.SubjectKind { return m.Config.Subject.Kind }
@@ -102,6 +105,21 @@ func (m *Managed) Preflight(ctx context.Context) error {
 			return fmt.Errorf("inspect TUN interface: %w", inspectErr)
 		}
 	}
+	if m.Config.Subject.Kind == protocol.SubjectTunAuto {
+		target, parseErr := netip.ParseAddrPort(m.Config.Workload.Target)
+		if parseErr != nil {
+			return parseErr
+		}
+		prefixes, addressErr := m.ReadPrefixes(m.Config.Subject.OutboundInterface)
+		if addressErr != nil {
+			return fmt.Errorf("inspect auto_redirect outbound interface addresses: %w", addressErr)
+		}
+		for _, prefix := range prefixes {
+			if prefix.Contains(target.Addr()) {
+				return fmt.Errorf("auto_redirect benchmark target %s is inside connected prefix %s on %s; use a routed non-connected LAN alias to avoid sing-tun local-network bypass", target.Addr(), prefix, m.Config.Subject.OutboundInterface)
+			}
+		}
+	}
 	if m.Config.Subject.Kind == protocol.SubjectEBPFCgroup {
 		if _, statErr := os.Stat(m.Config.Subject.CgroupPath); statErr == nil {
 			return errors.New("benchmark worker cgroup already exists; refusing to adopt an unowned cgroup")
@@ -134,6 +152,29 @@ func (m *Managed) Preflight(ctx context.Context) error {
 		m.kernelProbe = bytes.TrimSpace(output)
 	}
 	return nil
+}
+
+func interfacePrefixes(interfaceName string) ([]netip.Prefix, error) {
+	if interfaceName == "" {
+		return nil, errors.New("outbound interface is required")
+	}
+	networkInterface, err := net.InterfaceByName(interfaceName)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := networkInterface.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	prefixes := make([]netip.Prefix, 0, len(addresses))
+	for _, address := range addresses {
+		prefix, parseErr := netip.ParsePrefix(address.String())
+		if parseErr != nil {
+			continue
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 func (m *Managed) Snapshot(ctx context.Context) error {
@@ -235,7 +276,10 @@ func (m *Managed) Start(ctx context.Context) error {
 		return m.netfilter.Install(ctx)
 	}
 	if m.Config.Subject.Kind == protocol.SubjectTun || m.Config.Subject.Kind == protocol.SubjectTunAuto {
-		return m.waitTunInterface(ctx)
+		if err = m.waitTunInterface(ctx); err != nil {
+			return err
+		}
+		return m.waitAPIListener(ctx)
 	}
 	if err = m.waitForSurvival(ctx, 150*time.Millisecond); err != nil {
 		return err
@@ -250,6 +294,44 @@ func (m *Managed) Start(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (m *Managed) waitAPIListener(ctx context.Context) error {
+	if m.Config.Subject.APIListen == "" {
+		return m.waitForSurvival(ctx, 250*time.Millisecond)
+	}
+	listen, err := netip.ParseAddrPort(m.Config.Subject.APIListen)
+	if err != nil {
+		return fmt.Errorf("parse API listener: %w", err)
+	}
+	deadline := time.Now().Add(time.Duration(m.Config.Execution.StartupTimeoutMS) * time.Millisecond)
+	for {
+		if m.exited() {
+			return fmt.Errorf("sing-box exited during startup: %w", m.processExit)
+		}
+		ready, inspectErr := m.HasSocket("tcp", listen.Port(), listen.Addr().Is6())
+		if inspectErr != nil {
+			return fmt.Errorf("inspect API listener: %w", inspectErr)
+		}
+		if ready {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("sing-box API listener did not become ready")
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		}
+	}
 }
 
 func (m *Managed) waitTransparentListener(ctx context.Context) error {
@@ -402,9 +484,10 @@ func (m *Managed) ObservePath(ctx context.Context) (subject.Observation, error) 
 }
 
 type tunObservation struct {
-	Interface    netdev.Stats `json:"interface"`
-	Backend      string       `json:"backend,omitempty"`
-	BackendState string       `json:"backend_state,omitempty"`
+	Interface      netdev.Stats `json:"interface"`
+	Backend        string       `json:"backend,omitempty"`
+	BackendState   string       `json:"backend_state,omitempty"`
+	BackendPackets uint64       `json:"backend_packets,omitempty"`
 }
 
 func (m *Managed) observeTun(ctx context.Context) (subject.Observation, error) {
@@ -417,30 +500,114 @@ func (m *Managed) observeTun(ctx context.Context) (subject.Observation, error) {
 		if output, nftErr := m.Runner.Run(ctx, "nft", "-j", "list", "table", "inet", "sing-box"); nftErr == nil && json.Valid(output) {
 			observation.Backend = "nftables"
 			observation.BackendState = string(bytes.TrimSpace(output))
+			observation.BackendPackets = nftablesQueuePackets(output)
 		} else {
-			firewall := m.Config.Subject.FirewallBinary
-			if firewall == "" {
-				firewall = "iptables"
-				if strings.Contains(m.Config.Workload.Target, "[") {
-					firewall = "ip6tables"
-				}
+			saveBinary := iptablesSaveBinary(m.Config.Subject.FirewallBinary, strings.Contains(m.Config.Workload.Target, "["))
+			output, saveErr := m.Runner.Run(ctx, saveBinary, "-c")
+			state, packets, parseErr := parseIPTablesAutoRedirectState(output, m.Config.Subject.TunName)
+			if saveErr != nil {
+				return subject.Observation{}, fmt.Errorf("inspect auto_redirect iptables backend: %w", saveErr)
 			}
-			var state []string
-			for _, table := range []string{"nat", "mangle", "filter"} {
-				output, tableErr := m.Runner.Run(ctx, firewall, "-w", "-t", table, "-S")
-				if tableErr == nil && strings.Contains(string(output), "sing-box") {
-					state = append(state, string(bytes.TrimSpace(output)))
-				}
+			if parseErr != nil {
+				return subject.Observation{}, parseErr
 			}
-			if len(state) == 0 {
+			if state == "" {
 				return subject.Observation{}, errors.New("auto_redirect backend state was not observable")
 			}
 			observation.Backend = "iptables"
-			observation.BackendState = strings.Join(state, "\n")
+			observation.BackendState = state
+			observation.BackendPackets = packets
 		}
 	}
 	data, err := json.Marshal(observation)
 	return subject.Observation{CapturedAt: time.Now(), Data: data}, err
+}
+
+func iptablesSaveBinary(firewallBinary string, ipv6 bool) string {
+	if firewallBinary == "" {
+		if ipv6 {
+			return "ip6tables-save"
+		}
+		return "iptables-save"
+	}
+	directory, name := filepath.Split(firewallBinary)
+	if strings.HasSuffix(name, "-restore") {
+		name = strings.TrimSuffix(name, "-restore")
+	}
+	if strings.Contains(name, "tables") && !strings.HasSuffix(name, "-save") {
+		name += "-save"
+	}
+	return filepath.Join(directory, name)
+}
+
+func parseIPTablesAutoRedirectState(output []byte, tunName string) (string, uint64, error) {
+	var state []string
+	var queuePackets uint64
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.Contains(line, "sing-box") || tunName != "" && strings.Contains(line, tunName) {
+			state = append(state, line)
+		}
+		if !strings.Contains(line, " -A sing-box-") || !strings.Contains(line, " -j NFQUEUE") || !strings.HasPrefix(line, "[") {
+			continue
+		}
+		end := strings.IndexByte(line, ']')
+		separator := strings.IndexByte(line, ':')
+		if end < 0 || separator < 1 || separator > end {
+			return "", 0, fmt.Errorf("invalid iptables counter line %q", line)
+		}
+		packets, err := strconv.ParseUint(line[1:separator], 10, 64)
+		if err != nil {
+			return "", 0, fmt.Errorf("invalid iptables packet counter: %w", err)
+		}
+		queuePackets += packets
+	}
+	return strings.Join(state, "\n"), queuePackets, nil
+}
+
+func nftablesQueuePackets(output []byte) uint64 {
+	var value any
+	if json.Unmarshal(output, &value) != nil {
+		return 0
+	}
+	return findNFTablesQueuePackets(value)
+}
+
+func findNFTablesQueuePackets(value any) uint64 {
+	switch typed := value.(type) {
+	case []any:
+		var total uint64
+		for _, item := range typed {
+			total += findNFTablesQueuePackets(item)
+		}
+		return total
+	case map[string]any:
+		if rule, loaded := typed["rule"].(map[string]any); loaded {
+			expressions, _ := rule["expr"].([]any)
+			hasQueue := false
+			var packets uint64
+			for _, expression := range expressions {
+				item, _ := expression.(map[string]any)
+				if _, loaded = item["queue"]; loaded {
+					hasQueue = true
+				}
+				if counter, counterLoaded := item["counter"].(map[string]any); counterLoaded {
+					if count, countLoaded := counter["packets"].(float64); countLoaded && count >= 0 {
+						packets += uint64(count)
+					}
+				}
+			}
+			if hasQueue {
+				return packets
+			}
+		}
+		var total uint64
+		for _, item := range typed {
+			total += findNFTablesQueuePackets(item)
+		}
+		return total
+	default:
+		return 0
+	}
 }
 
 func (m *Managed) observeEBPFOnce(ctx context.Context) (subject.Observation, bool, error) {
@@ -488,18 +655,27 @@ func (m *Managed) ProvePath(_ context.Context, before, after subject.Observation
 		var beforeTun, afterTun tunObservation
 		decodeErr := errors.Join(json.Unmarshal(before.Data, &beforeTun), json.Unmarshal(after.Data, &afterTun))
 		delta, deltaErr := netdev.Delta(beforeTun.Interface, afterTun.Interface)
-		socketErr := subject.ValidateSocketPathEvidence(warmup.Details, true, m.Config.Execution.WorkerUID, "")
+		redirected := deltaErr == nil && delta.RXPackets > 0 && delta.TXPackets > 0
+		socketErr := subject.ValidateSocketPathEvidence(warmup.Details, redirected, m.Config.Execution.WorkerUID, "")
 		activityErr := error(nil)
-		if deltaErr == nil && (delta.RXPackets == 0 || delta.TXPackets == 0) {
+		if m.Config.Subject.Kind == protocol.SubjectTun && !redirected {
 			activityErr = errors.New("TUN RX/TX counters did not both increase")
 		}
 		backendErr := error(nil)
-		if m.Config.Subject.Kind == protocol.SubjectTunAuto && (beforeTun.Backend == "" || afterTun.Backend == "" || beforeTun.Backend != afterTun.Backend) {
-			backendErr = errors.New("auto_redirect backend was not stable across warmup")
+		if m.Config.Subject.Kind == protocol.SubjectTunAuto {
+			if beforeTun.Backend == "" || afterTun.Backend == "" || beforeTun.Backend != afterTun.Backend {
+				backendErr = errors.New("auto_redirect backend was not stable across warmup")
+			} else if afterTun.BackendPackets <= beforeTun.BackendPackets {
+				backendErr = errors.New("auto_redirect NFQUEUE counters did not increase")
+			}
 		}
 		proof.Method = "TUN RX/TX counter deltas plus server-confirmed redirected tuple"
 		if m.Config.Subject.Kind == protocol.SubjectTunAuto {
-			proof.Method = "active auto_redirect backend, TUN RX/TX counter deltas, and server-confirmed redirected tuple"
+			if redirected {
+				proof.Method = "auto_redirect NFQUEUE counter delta, TUN RX/TX counter deltas, and server-confirmed redirected tuple"
+			} else {
+				proof.Method = "auto_redirect NFQUEUE counter delta plus server-confirmed direct PreMatch tuple"
+			}
 		}
 		proof.Valid = decodeErr == nil && deltaErr == nil && activityErr == nil && backendErr == nil && socketErr == nil
 		if !proof.Valid {
