@@ -3,6 +3,7 @@ package udp
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,5 +129,50 @@ func TestUDPPathEvidence(t *testing.T) {
 	cancel()
 	if err = <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+type dropFirstProofResponseConn struct {
+	net.PacketConn
+	dropped atomic.Bool
+}
+
+func (c *dropFirstProofResponseConn) WriteTo(packet []byte, address net.Addr) (int, error) {
+	if len(packet) >= headerSize && packet[5]&(flagProof|flagResponse) == flagProof|flagResponse && c.dropped.CompareAndSwap(false, true) {
+		return len(packet), nil
+	}
+	return c.PacketConn.WriteTo(packet, address)
+}
+
+func TestUDPPathEvidenceSurvivesLostFirstResponse(t *testing.T) {
+	for _, socketMode := range []protocol.UDPSocketMode{protocol.UDPSocketConnected, protocol.UDPSocketUnconnected} {
+		t.Run(string(socketMode), func(t *testing.T) {
+			connection, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapped := &dropFirstProofResponseConn{PacketConn: connection}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- (Server{}).Serve(ctx, wrapped) }()
+			result, runErr := RunDetailed(context.Background(), ClientConfig{
+				Target: connection.LocalAddr().String(), Mode: protocol.ModeEcho, PayloadBytes: 64,
+				Requests: 3, Flows: 1, Timeout: 50 * time.Millisecond, RunHash: 42,
+				CollectProof: true, SocketMode: socketMode,
+			})
+			if runErr != nil {
+				t.Fatal(runErr)
+			}
+			if result.Counters.Lost != 1 || result.Counters.Operations != 2 || len(result.SocketPaths) != 1 {
+				t.Fatalf("result=%+v", result)
+			}
+			if result.SocketPaths[0].ClientLocal != result.SocketPaths[0].ServerObservedPeer {
+				t.Fatalf("path=%+v", result.SocketPaths[0])
+			}
+			cancel()
+			if err = <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

@@ -190,6 +190,7 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 	response := make([]byte, responseSize)
 	requests := perWorkerRequests(config.Requests, config.Flows, flow)
 	var previous uint64
+	proofCollected := false
 	for completed := 0; requests == 0 || completed < requests; completed++ {
 		if ctx.Err() != nil {
 			return nil
@@ -197,7 +198,7 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 		sequence := uint64(completed + 1)
 		sentAt := time.Now()
 		requestHeader := header{run: config.RunHash, flow: uint32(flow), sequence: sequence, sentNS: sentAt.UnixNano()}
-		if config.CollectProof && completed == 0 {
+		if config.CollectProof && !proofCollected {
 			requestHeader.flags |= flagProof
 		}
 		build(packet, requestHeader)
@@ -245,6 +246,7 @@ func runEchoFlow(ctx context.Context, config ClientConfig, flow int, counters *a
 				return canonicalErr
 			}
 			*paths = append(*paths, protocol.SocketPathEvidence{Network: "udp", ClientLocal: clientLocal, ServerObservedPeer: serverPeer})
+			proofCollected = true
 		}
 		*latencies = append(*latencies, time.Since(sentAt).Nanoseconds())
 		counters.operations.Add(1)
