@@ -28,6 +28,23 @@ func TestExplicitZeroWarmupIsPreserved(t *testing.T) {
 	}
 }
 
+func TestValidCgroupPathUsesDevicePOSIXSemantics(t *testing.T) {
+	for _, testCase := range []struct {
+		path string
+		want bool
+	}{
+		{path: "/sys/fs/cgroup/inbound-bench", want: true},
+		{path: "/sys/fs/cgroup/nested/worker", want: true},
+		{path: "/sys/fs/cgroup", want: false},
+		{path: "/sys/fs/cgroup/../escape", want: false},
+		{path: `C:\\sys\\fs\\cgroup\\worker`, want: false},
+	} {
+		if got := validCgroupPath(testCase.path); got != testCase.want {
+			t.Fatalf("validCgroupPath(%q)=%t, want %t", testCase.path, got, testCase.want)
+		}
+	}
+}
+
 func TestConfigValidationRejectsAmbiguousWorkloads(t *testing.T) {
 	base := Config{
 		ProtocolVersion: Version,

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -497,15 +498,8 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("subject.cgroup_path is only valid for ebpf-cgroup"))
 	}
 	if c.Subject.Kind == SubjectEBPFCgroup {
-		if c.Subject.CgroupPath == "" || !filepath.IsAbs(c.Subject.CgroupPath) {
-			errs = append(errs, errors.New("an absolute subject.cgroup_path is required for ebpf-cgroup isolation"))
-		} else {
-			cgroupRoot := filepath.Clean("/sys/fs/cgroup")
-			cgroupPath := filepath.Clean(c.Subject.CgroupPath)
-			relative, relErr := filepath.Rel(cgroupRoot, cgroupPath)
-			if relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				errs = append(errs, errors.New("subject.cgroup_path must name a dedicated child below /sys/fs/cgroup"))
-			}
+		if !validCgroupPath(c.Subject.CgroupPath) {
+			errs = append(errs, errors.New("subject.cgroup_path must name an absolute dedicated child below /sys/fs/cgroup"))
 		}
 		if len(c.Subject.IncludeUID) != 1 || c.Execution.WorkerUID == nil || c.Subject.IncludeUID[0] != *c.Execution.WorkerUID {
 			errs = append(errs, errors.New("ebpf-cgroup requires one include_uid equal to execution.worker_uid"))
@@ -527,6 +521,15 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func validCgroupPath(value string) bool {
+	if !path.IsAbs(value) {
+		return false
+	}
+	const cgroupRoot = "/sys/fs/cgroup"
+	cleaned := path.Clean(value)
+	return strings.HasPrefix(cleaned, cgroupRoot+"/")
 }
 
 func hostIsLoopback(address string) bool {
