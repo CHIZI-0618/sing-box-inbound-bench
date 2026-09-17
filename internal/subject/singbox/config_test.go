@@ -91,6 +91,10 @@ func TestGenerateRedirectAndTProxyConfigs(t *testing.T) {
 			if inbound["type"] != string(kind) || inbound["listen_port"] != float64(15001) {
 				t.Fatalf("inbound=%v", inbound)
 			}
+			_, hasNetwork := inbound["network"]
+			if hasNetwork != (kind == protocol.SubjectTProxy) {
+				t.Fatalf("network field presence=%v inbound=%v", hasNetwork, inbound)
+			}
 		})
 	}
 }

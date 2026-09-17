@@ -52,9 +52,11 @@ func GenerateConfig(config protocol.Config) ([]byte, error) {
 		inbound := map[string]any{
 			"type": inboundType, "tag": "benchmark-" + inboundType + "-in",
 			"listen": listenHost, "listen_port": listenPort,
-			"network": []string{string(config.Workload.Protocol)},
 		}
-		if config.Workload.Protocol == protocol.ProtocolUDP {
+		if config.Subject.Kind == protocol.SubjectTProxy {
+			inbound["network"] = []string{string(config.Workload.Protocol)}
+		}
+		if config.Subject.Kind == protocol.SubjectTProxy && config.Workload.Protocol == protocol.ProtocolUDP {
 			inbound["udp_timeout"] = "5m"
 			inbound["udp_mapping"] = "endpoint_independent"
 			inbound["udp_filtering"] = "endpoint_independent"
