@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -289,18 +288,24 @@ func (m *Managed) waitTransparentListener(ctx context.Context) error {
 }
 
 func (m *Managed) waitListener(ctx context.Context) error {
+	listen, err := netip.ParseAddrPort(m.Config.Subject.Listen)
+	if err != nil {
+		return err
+	}
 	deadline := time.Now().Add(time.Duration(m.Config.Execution.StartupTimeoutMS) * time.Millisecond)
 	for {
 		if m.exited() {
 			return fmt.Errorf("sing-box exited during startup: %w", m.processExit)
 		}
-		connection, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp", m.Config.Subject.Listen)
-		if err == nil {
-			_ = connection.Close()
+		ready, inspectErr := m.HasSocket(string(m.Config.Workload.Protocol), listen.Port(), listen.Addr().Is6())
+		if inspectErr != nil {
+			return fmt.Errorf("inspect direct listener: %w", inspectErr)
+		}
+		if ready {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("listener did not become ready: %w", err)
+			return errors.New("direct listener did not become ready")
 		}
 		timer := time.NewTimer(25 * time.Millisecond)
 		select {

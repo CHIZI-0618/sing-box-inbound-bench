@@ -150,3 +150,25 @@ func TestManagedCreatesAndRemovesOnlyItsWorkerCgroup(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestManagedDirectUDPWaitsForUDPListener(t *testing.T) {
+	commands := &fakeRunner{}
+	managed := New(protocol.Config{
+		Subject:   protocol.SubjectConfig{Kind: protocol.SubjectDirect, Listen: "127.0.0.1:18080"},
+		Execution: protocol.ExecutionConfig{StartupTimeoutMS: 1000},
+		Workload:  protocol.WorkloadConfig{Protocol: protocol.ProtocolUDP},
+	}, commands)
+	var network string
+	var port uint16
+	var ipv6 bool
+	managed.HasSocket = func(gotNetwork string, gotPort uint16, gotIPv6 bool) (bool, error) {
+		network, port, ipv6 = gotNetwork, gotPort, gotIPv6
+		return true, nil
+	}
+	if err := managed.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if network != "udp" || port != 18080 || ipv6 {
+		t.Fatalf("listener probe network=%q port=%d ipv6=%t", network, port, ipv6)
+	}
+}
