@@ -15,7 +15,7 @@
 - 原生 UDP echo 与按全局速率调度的开放环固定 offered-load PPS client/server；
 - `raw`、`direct`、`redirect`、`tproxy`、`tun`、`tun-auto-redirect`、
   `ebpf-tc`、`ebpf-cgroup` 全部八个 subject；
-- sing-box 配置生成、配置检查、子进程管理和 eBPF Clash API 运行时诊断；
+- sing-box 配置生成、配置检查、子进程管理和 sing-box API eBPF 运行时诊断；
 - 客户端与 sing-box 的 CPU、I/O、RSS/PSS/USS/HWM/swap、fault、context switch、
   thread/FD/socket 分账；
 - 整机及逐核 CPU、NET_RX/NET_TX softirq、fault、migration、conntrack、指定接口
@@ -40,8 +40,10 @@ eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力
 证明和生命周期框架；它们已经有无设备 fake-runner 测试和 Android 自动部署/恢复编排，
 但当前提交尚未连接真机完成厂商内核验证。worker 已会在创建任何 workload socket 前加入
 专用 cgroup、切换目标 UID 并向 controller 回报验证结果，但连接真机前不会宣称 eBPF
-性能执行链已经验证完成。eBPF 测试二进制必须统一启用 `with_ebpf,with_clash_api`；后者用于读取运行实例的
-`/ebpf/` 诊断，所有 subject 必须使用同一份二进制以保持公平。
+性能执行链已经验证完成。eBPF 测试二进制必须启用 `with_ebpf`；运行时诊断通过内置
+sing-box API 的 `ebpf` RPC 获取，不依赖 Clash API 或 `with_clash_api`。所有非 raw subject
+使用同一份二进制，并统一启动同一只读 API 服务，避免把 API 服务的内存与待机成本只
+计入 eBPF subject；只有 eBPF case 会在正式计时窗口外查询诊断。
 
 工具有意不自动修改 USB gadget，也不在 USB 充电条件下伪造直接能耗结论。通过全部
 有效性门槛的真实 LAN/USB 输出可用于发布分项比较；缺少 raw control、路径证明或恢复
@@ -78,6 +80,7 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
 
 ```sh
 ./inbound-bench generate-matrix \
+  --preset full \
   --output matrix-lan.json \
   --matrix-id pixel8-usb-20260915 \
   --results /data/local/tmp/sing-box/results \
@@ -88,13 +91,17 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
   --udp-pps 100000
 ```
 
-生成器展开 139 个已校验 case：八个 subject 的 TCP RTT、1/8 长流上传下载、1/32/128
-短连接、1/250/500/750/1000 idle 曲线，以及支持 UDP 的七个 subject 的 RTT、1/64-flow
-PPS、MTU payload 和 1000-flow churn；redirect 的 UDP 会按能力表直接不生成，而不是产生
-伪失败。`--udp-pps` 是全 workload offered load，应先用 raw pilot 找到链路可持续范围，
-再分别生成 25%/50%/75% 三套矩阵，不能把某台设备的默认 100 kpps 当成统一负载结论。
-完整默认矩阵为 1 次 warmup 加 5 次正式重复，并在每个 block 前后执行 raw control，耗时
-较长；调试可降低 `--warmups`、`--repetitions` 和 `--duration-ms`，但不可与正式结果混合。
+生成器提供 `smoke`、`core`、`full` 三档预设，分别展开 22、114、168 个已校验 case。
+完整矩阵包括八个 subject 的 standby、TCP RTT、1/8 长流上传下载、1/32/128 短连接、
+1/250/500/750/1000 idle 曲线，以及支持 UDP 的七个 subject 的 connected/unconnected RTT、
+1/64-flow PPS、MTU payload 和 1000-flow churn；redirect 的 UDP 会按能力表直接不生成，
+而不是产生伪失败。可用 `--subjects` 与 `--workloads` 做显式子集测试。
+
+`--udp-pps` 是全 workload offered load，应先用 raw pilot 找到链路可持续范围，再分别生成
+25%/50%/75% 三套矩阵，不能把某台设备的默认 100 kpps 当成统一负载结论。`full` 默认
+1 次额外 warmup repetition 加 5 次正式重复，`core` 为 1+3，`smoke` 为 0+1；这里的 0
+不取消每轮必须执行的路径证明预热。每个 block 前后仍执行 raw control。自定义参数只
+覆盖对应 preset 默认值，不可将不同预设或时长的结果混合统计。
 
 Android 主机侧执行：
 
@@ -269,7 +276,8 @@ outbound。不得用稳定版测试一个入站、开发版测试另一个入站
 
 - IPv4 为第一阶段主测试；IPv6 使用独立矩阵；
 - 日志关闭；
-- 不启用 DNS、FakeIP、sniff、规则集下载和 Clash API；
+- 不启用 DNS、FakeIP、sniff、规则集下载和 Clash API；所有非 raw subject 仅启用相同的
+  loopback sing-box API 服务，用于消除基线差异，eBPF 查询发生在计时窗口外；
 - 路由目标使用字面量 IP；
 - direct outbound 固定到被测物理接口；
 - 透明方案只接管 benchmark UID、目标 `/32` 和测试端口；
@@ -313,23 +321,25 @@ eBPF cgroup 测试使用 run-scoped 专用子 cgroup，只将 benchmark worker �
 | 小包 RTT | 单连接，64B ping-pong，至少 20000 次 | p50/p95/p99/p99.9 |
 | 短连接 | connect + 64B 请求/响应 + 服务端主动关闭 | CPS、失败率、延迟分位数 |
 | 短连接并发 | 1、32、128 | CPS、CPU ms/1000 conn、尾延迟 |
-| 空闲连接 | 0..1000，步长 250 | MiB/100 conn、FD/conn、内核状态 |
+| 待机 | 预热证明路径后不创建业务 socket | CPU、context switch、idle transition、wakeup source |
+| 空闲连接 | 1、250、500、750、1000 | MiB/100 conn、FD/conn、内核状态 |
 
 短连接由服务端主动关闭，避免 DUT 的临时端口和 TIME_WAIT 成为主要限制。每个响应必须
 包含请求 token，防止将错误连接或陈旧数据计为成功。
 
 空闲连接使用 `mode: "idle"` 和 `duration_ms`。建立阶段不计入驻留时间；连接建立完毕后
 保持到 duration 结束，worker 在通知 controller 采样后才关闭 socket，因此结果中的
-RSS/PSS/USS、FD、socket 和 BPF map 状态确实对应连接仍存活的时刻。0 连接基线使用同一
-subject 的单独无负载启动快照，不应伪装成一个 connections=0 workload；仓库中的
+RSS/PSS/USS、FD、socket 和 BPF map 状态确实对应连接仍存活的时刻。0 连接基线由
+`mode: "standby"` 表示：仍先用短 TCP echo 预热完成接管路径证明，正式计时阶段不创建
+业务 socket。它与 `connections=0` 的 idle 负载语义不同；仓库中的
 `configs/raw-tcp-idle.json` 给出 250 连接示例。
 
 ### 6.2 UDP
 
 | 名称 | 参数 | 输出 |
 | --- | --- | --- |
-| 单 flow RTT | 64B echo，至少 20000 次 | p50/p95/p99/p99.9、loss |
-| 小包 PPS | 64B，开放环固定 offered load | delivered PPS、loss、reorder、CPU/Mpps |
+| 单 flow RTT | connected 与 unconnected，64B echo，至少 20000 次 | p50/p95/p99/p99.9、loss |
+| 小包 PPS | connected/unconnected，64B，开放环固定 offered load | delivered PPS、loss、reorder、CPU/Mpps |
 | MTU payload | IPv4@MTU1500 为 1432B 数据 + 40B 基准头，即 1472B UDP payload | 完整性、吞吐、loss |
 | 多 flow | 1、64、256 个长期 flow | PPS、锁竞争迹象、CPU、内存 |
 | flow churn | 每个 source port/socket 仅一组请求响应 | flow/s、失败率、CPU/1000 flow |
@@ -339,6 +349,11 @@ subject 的单独无负载启动快照，不应伪装成一个 connections=0 wor
 UDP 数据包携带 magic、case ID、flow ID、sequence、发送单调时间和 payload checksum。
 开放环发送器必须预分配 buffer，并在平台支持时使用批量收发，避免负载发生器先成为
 瓶颈。
+
+`udp_socket_mode: "connected"` 使用 connected UDP socket，覆盖普通 `connect + read/write`
+路径；`"unconnected"` 使用真正的 `ListenPacket + WriteTo/ReadFrom`，覆盖 cgroup
+`sendmsg/recvmsg` 与 TC 数据面的差异。二者是不同 workload key，raw/direct 基线不会
+互相复用或合并。
 
 `offered_pps` 表示整个 workload 的总发送速率，不是每个 flow 的速率。发送器按绝对
 单调时钟统一调度并轮询分配给各 flow，避免 flow 数增加时隐式放大 offered load。
@@ -379,6 +394,9 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 - TUN queue 与接口统计；
 - netfilter 专用 chain 精确 counters；
 - eBPF program/map/link 数、map 容量、占用、错误和 fallback counters；
+- CPU idle state 的累计驻留时间与 transition 增量；
+- `/sys/kernel/debug/wakeup_sources` 可读时的 event/wakeup/time 增量；不可读取时字段缺省，
+  不得把缺失数据解释为零唤醒；
 - 可用时记录 BPF program run time，但开启 BPF stats 的 profiling 轮次必须与正式计时
   分开；
 - 温度、thermal state、各 CPU policy 当前频率；
@@ -394,6 +412,12 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 `(key_size+value_size)*max_entries` 冒充包含 preallocation、per-CPU 和内核元数据的真实
 占用。map 当前 entry 数和程序 run_time 仍应从 eBPF runtime diagnostics/单独 profiling
 轮次解释，不能为了正式计时高频扫描 fdinfo 或开启全局 BPF stats。
+
+每个 eBPF 正式 repetition 在计时窗口前后各执行一次 `sing-box api ebpf`，保存完整 JSON
+快照。attachment/state/recovery 必须保持正常；assignment、rewrite、reconcile、recovery、
+FakeIP ICMP rewrite 以及 UDP NAT eviction/drop/release 失败计数在窗口内增加时，该轮直接
+标记 invalid。诊断查询和 map occupancy 遍历都不进入正式 workload 计时区间，也不增加
+周期扫描或待机唤醒。
 
 ## 8. 执行协议
 
@@ -440,7 +464,7 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 worker 的 local tuple 一致；所有经过 sing-box 的方案必须不同，证明服务端看到的是
 sing-box 新建的 outbound socket，而不是 worker socket。该证明只适用于无 NAT 的正式
 LAN/USB 点对点拓扑，并与各 subject 的 attachment/counter 证据组合使用。正式计时阶段
-不执行高频诊断读取。
+不执行高频诊断读取；eBPF 仅在测量边界读取一次 before/after 运行时快照。
 
 UDP PPS 将 socket 建立、发送和尾包接收阶段分别记录为 `setup_duration_ns`、
 `active_duration_ns` 和 `drain_duration_ns`，吞吐和 offered rate 不得使用包含 setup 或
@@ -538,7 +562,7 @@ results/<run-id>/
 
 每个 subject 目录包含配置副本、路径证据、每个 repetition 的 JSON、stderr 和校验和。
 
-## 13. 计划中的仓库结构
+## 13. 仓库结构
 
 ```text
 cmd/inbound-bench/          CLI
@@ -547,10 +571,9 @@ internal/subject/           subject 生命周期接口
 internal/subject/direct/    direct inbound
 internal/netfilter/         redirect 与 TProxy 的专属系统资源
 internal/netdev/            TUN/接口 counters 与监听状态
-internal/subject/singbox/   sing-box 入站配置、进程和路径证明
-internal/subject/ebpf/      local TC 与 cgroup
-internal/workload/tcp/      bulk、RTT、short、idle
-internal/workload/udp/      RTT、PPS、bulk、flow churn
+internal/subject/singbox/   sing-box 入站配置、进程、eBPF API 与路径证明
+internal/workload/tcp/      bulk、RTT、short、idle、standby
+internal/workload/udp/      connected/unconnected RTT、PPS、flow churn
 internal/metrics/           process、system、BPF、netfilter、thermal
 internal/platform/android/  ADB、UID、cgroup、USB
 internal/platform/linux/    namespace、route、TC

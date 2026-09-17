@@ -62,4 +62,11 @@ surface. If restore verification fails, do not reboot blindly: compare the two a
 per-repetition exact inverse commands first.
 
 Real-device eBPF reports should include device model, Android build, kernel release, complete sing-box
-startup log, `tools ebpf status` output and `/sys/fs/pstore/` after any reboot.
+startup log, `tools ebpf status` output and `/sys/fs/pstore/` after any reboot. `tools ebpf status` is
+the non-attaching capability probe; the benchmark separately calls `sing-box api ebpf` on the running
+instance and stores before/after runtime snapshots for attachment, recovery, counters and map
+occupancy. Do not substitute one for the other.
+
+CPU idle-state counters are read from sysfs. Wakeup-source counters are recorded only when
+`/sys/kernel/debug/wakeup_sources` is already readable; the runner does not mount debugfs or poll it.
+An absent field means unavailable evidence, not zero wakeups.
