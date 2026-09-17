@@ -75,6 +75,31 @@ func TestTCPDurationBulk(t *testing.T) {
 	}
 }
 
+func TestTCPUploadProgressAcknowledgements(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (Server{}).Serve(ctx, listener) }()
+	const blocks = 20
+	result, _, err := Run(context.Background(), ClientConfig{
+		Target: listener.Addr().String(), Mode: protocol.ModeBulkUpload,
+		PayloadBytes: 64 << 10, Requests: blocks, Connections: 1, Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Operations != blocks || result.BytesSent != blocks*(64<<10) {
+		t.Fatalf("result=%+v", result)
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTCPPathEvidence(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

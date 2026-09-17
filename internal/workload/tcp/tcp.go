@@ -18,7 +18,7 @@ import (
 
 const (
 	frameMagic   = 0x53424942 // SBIB
-	frameVersion = 2
+	frameVersion = 3
 	headerSize   = 24
 	opEcho       = 1
 	opUpload     = 2
@@ -26,6 +26,11 @@ const (
 	opShort      = 4
 	flagResponse = 1
 	flagProof    = 2
+
+	// Bound application data accepted by the sender but not yet consumed by the
+	// benchmark server. This keeps the duration-limited upload's final drain
+	// below the operation timeout without turning every block into an RTT.
+	uploadAckWindowBytes = 1 << 20
 )
 
 type frameHeader struct {
@@ -137,9 +142,11 @@ func (s Server) serveConnection(connection net.Conn) error {
 
 // An upload control header describes one repeated, checksum-protected payload
 // block. sequence is the requested block count, or zero for a duration-limited
-// stream that ends with TCP half-close. No per-block acknowledgement is sent.
+// stream that ends with TCP half-close. Progress acknowledgements bound queued
+// data; the final acknowledgement proves how many complete blocks arrived.
 func (s Server) serveUpload(reader io.Reader, writer *bufio.Writer, control frameHeader, headerBuffer []byte) error {
 	payload := make([]byte, control.length)
+	ackInterval := uploadAckInterval(len(payload))
 	var completed uint64
 	for control.sequence == 0 || completed < control.sequence {
 		_, err := io.ReadFull(reader, payload)
@@ -153,13 +160,31 @@ func (s Server) serveUpload(reader io.Reader, writer *bufio.Writer, control fram
 			return errors.New("upload payload checksum mismatch")
 		}
 		completed++
+		if completed%ackInterval == 0 {
+			if err := writeUploadAcknowledgement(writer, headerBuffer, completed); err != nil {
+				return err
+			}
+		}
 	}
-	response := frameHeader{operation: opUpload, flags: flagResponse, sequence: completed}
-	writeHeader(headerBuffer, response)
+	if control.sequence == 0 || completed%ackInterval != 0 {
+		return writeUploadAcknowledgement(writer, headerBuffer, completed)
+	}
+	return nil
+}
+
+func writeUploadAcknowledgement(writer *bufio.Writer, headerBuffer []byte, completed uint64) error {
+	writeHeader(headerBuffer, frameHeader{operation: opUpload, flags: flagResponse, sequence: completed})
 	if _, err := writer.Write(headerBuffer); err != nil {
 		return err
 	}
 	return writer.Flush()
+}
+
+func uploadAckInterval(payloadBytes int) uint64 {
+	if payloadBytes <= 0 || payloadBytes >= uploadAckWindowBytes {
+		return 1
+	}
+	return uint64(uploadAckWindowBytes / payloadBytes)
 }
 
 // A download control header requests repeated checksum-protected blocks.
@@ -457,14 +482,17 @@ func runUpload(ctx context.Context, config ClientConfig, worker int, counters *a
 		return err
 	}
 	end := endTime(config.Duration)
+	ackInterval := uploadAckInterval(len(payload))
 	var completed uint64
 	for blocks == 0 || completed < uint64(blocks) {
 		if ctx.Err() != nil || (!end.IsZero() && time.Now().After(end)) {
 			break
 		}
+		writeDeadline := time.Now().Add(config.Timeout)
 		if !end.IsZero() {
-			_ = connection.SetWriteDeadline(end)
+			writeDeadline = end
 		}
+		_ = connection.SetWriteDeadline(writeDeadline)
 		if err = writeAll(connection, payload); err != nil {
 			if blocks == 0 && isNetworkTimeout(err) {
 				break
@@ -474,11 +502,27 @@ func runUpload(ctx context.Context, config ClientConfig, worker int, counters *a
 		completed++
 		counters.operations.Add(1)
 		counters.bytesSent.Add(uint64(len(payload)))
+		if completed%ackInterval == 0 {
+			if err = readUploadAcknowledgement(connection, headerBuffer, completed, config.Timeout); err != nil {
+				return err
+			}
+		}
 	}
 	if err = connection.CloseWrite(); err != nil {
 		return err
 	}
-	_ = connection.SetReadDeadline(time.Now().Add(config.Timeout))
+	if blocks == 0 || completed%ackInterval != 0 {
+		if err = readUploadAcknowledgement(connection, headerBuffer, completed, config.Timeout); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readUploadAcknowledgement(connection net.Conn, headerBuffer []byte, completed uint64, timeout time.Duration) error {
+	if err := connection.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
 	response, err := readHeader(connection, headerBuffer)
 	if err != nil {
 		return err
