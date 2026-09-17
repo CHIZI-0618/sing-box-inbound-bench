@@ -16,6 +16,7 @@ type MatrixConfig struct {
 	Seed            int64    `json:"seed"`
 	OutputDirectory string   `json:"output_directory"`
 	CooldownMS      int64    `json:"cooldown_ms,omitempty"`
+	FailFast        bool     `json:"fail_fast,omitempty"`
 	Resume          bool     `json:"resume,omitempty"`
 	RawControl      *Config  `json:"raw_control,omitempty"`
 	Cases           []Config `json:"cases"`

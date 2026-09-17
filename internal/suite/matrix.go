@@ -25,6 +25,7 @@ type Options struct {
 	IdleDuration      int64
 	UDPPPS            int
 	CooldownMS        int64
+	FailFast          bool
 	Preset            string
 	Subjects          []protocol.SubjectKind
 	Workloads         []string
@@ -81,7 +82,7 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 	}
 	matrix := protocol.MatrixConfig{
 		ProtocolVersion: protocol.Version, MatrixID: options.MatrixID, Seed: options.Seed,
-		OutputDirectory: options.OutputDirectory, CooldownMS: options.CooldownMS,
+		OutputDirectory: options.OutputDirectory, CooldownMS: options.CooldownMS, FailFast: options.FailFast,
 	}
 	for _, kind := range subjects {
 		for _, template := range templates {

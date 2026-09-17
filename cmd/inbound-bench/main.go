@@ -104,6 +104,7 @@ func run(arguments []string) error {
 		idleDuration := flags.Int64("idle-duration-ms", 0, "idle TCP residence duration (0 uses preset default)")
 		udpPPS := flags.Int("udp-pps", 0, "total offered UDP packets per second (0 uses preset default)")
 		cooldown := flags.Int64("cooldown-ms", 1_000, "delay between matrix jobs; UDP PPS jobs also require a raw health probe")
+		failFast := flags.Bool("fail-fast", true, "stop a generated matrix after the first invalid job")
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ func run(arguments []string) error {
 			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target, RawTarget: *rawTarget,
 			OutboundInterface: *outboundInterface, WorkerUID: uint32(*workerUID), Seed: *seed,
 			WarmupRepetitions: *warmups, Repetitions: *repetitions, Duration: *duration,
-			IdleDuration: *idleDuration, UDPPPS: *udpPPS, CooldownMS: *cooldown, Preset: *preset,
+			IdleDuration: *idleDuration, UDPPPS: *udpPPS, CooldownMS: *cooldown, FailFast: *failFast, Preset: *preset,
 			Subjects: parseSubjectList(*subjects), Workloads: splitCommaList(*workloads),
 		})
 		if err != nil {
@@ -430,6 +431,12 @@ func runMatrix(configPath string) error {
 			return errors.Join(errors.Join(runErrors...), runContext.Err())
 		}
 		if job.Recovery != nil && !job.Recovery.Valid {
+			return errors.Join(runErrors...)
+		}
+		if matrix.FailFast && !job.Valid {
+			if len(runErrors) == 0 {
+				return fmt.Errorf("%s completed with an invalid result", job.ID)
+			}
 			return errors.Join(runErrors...)
 		}
 	}

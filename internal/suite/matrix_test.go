@@ -115,12 +115,15 @@ func TestGenerateCarriesMatrixCooldown(t *testing.T) {
 	matrix, err := Generate(Options{
 		MatrixID: "cooldown", OutputDirectory: "results", SingBoxBinary: "/tmp/sing-box",
 		Target: "192.0.2.2:19090", OutboundInterface: "eth0", WorkerUID: 2000,
-		Preset: PresetSmoke, CooldownMS: 1250,
+		Preset: PresetSmoke, CooldownMS: 1250, FailFast: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if matrix.CooldownMS != 1250 {
 		t.Fatalf("cooldown=%d", matrix.CooldownMS)
+	}
+	if !matrix.FailFast {
+		t.Fatal("fail_fast was not preserved")
 	}
 }

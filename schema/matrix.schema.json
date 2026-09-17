@@ -11,6 +11,7 @@
     "seed": { "type": "integer" },
     "output_directory": { "type": "string", "minLength": 1 },
     "cooldown_ms": { "type": "integer", "minimum": 0 },
+    "fail_fast": { "type": "boolean" },
     "resume": { "type": "boolean" },
     "raw_control": {
       "allOf": [

@@ -41,6 +41,7 @@ tuple. Confirm the raw baseline first.
   --interface eth0 \
   --worker-uid 2000 \
   --cooldown-ms 1000 \
+  --fail-fast=true \
   --udp-pps 100000
 ```
 
@@ -57,6 +58,10 @@ allows the next randomized case to start. Recovery evidence is stored in `state.
 probe stops the matrix with partial results instead of attributing stale queue pressure to the next
 subject. Tune `--cooldown-ms` for the topology, but do not use cooldown to disguise an offered load
 that already overloads the raw baseline.
+
+Generated matrices also default to `fail_fast: true`: the first invalid job is fully cleaned up and
+persisted before the matrix returns. Use `--fail-fast=false` only for an intentional diagnostic run
+that should collect independent failures despite invalid cases.
 
 The generator gives every non-raw subject the same loopback sing-box API service so its idle memory
 and CPU cost is not charged only to eBPF. It invokes `sing-box api ebpf` only for eBPF subjects and

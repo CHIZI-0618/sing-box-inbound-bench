@@ -89,6 +89,7 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
   --interface rndis0 \
   --worker-uid 2000 \
   --cooldown-ms 1000 \
+  --fail-fast=true \
   --udp-pps 100000
 ```
 
@@ -108,7 +109,9 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
 执行最多 5 次、每次 8 包的低速 UDP 恢复探测；只有 8/8 返回才继续下一个随机 case。
 探测不计入被测结果，但其次数、计数与错误会写入 `state.json`。持续过载后网络未恢复时
 矩阵会保留部分结果并停止，避免把队列残留误记成后续入站的失败。`--cooldown-ms` 可按
-拓扑调整；它不能替代先用 raw pilot 选取可持续 offered load。
+拓扑调整；它不能替代先用 raw pilot 选取可持续 offered load。生成器还默认写入
+`fail_fast: true`，第一个 invalid job 完成清理并保存状态后即停止；诊断性批量收集可显式
+使用 `--fail-fast=false`。
 
 Android 主机侧执行：
 
