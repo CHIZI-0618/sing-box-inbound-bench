@@ -90,7 +90,8 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
   --worker-uid 2000 \
   --cooldown-ms 1000 \
   --fail-fast=true \
-  --udp-pps 100000
+  --udp-pps 100000 \
+  --udp-mtu-pps 10000
 ```
 
 生成器提供 `smoke`、`core`、`full` 三档预设，分别展开 22、114、168 个已校验 case。
@@ -99,7 +100,8 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
 1/64-flow PPS、MTU payload 和 1000-flow churn；redirect 的 UDP 会按能力表直接不生成，
 而不是产生伪失败。可用 `--subjects` 与 `--workloads` 做显式子集测试。
 
-`--udp-pps` 是全 workload offered load，应先用 raw pilot 找到链路可持续范围，再分别生成
+`--udp-pps` 是普通 PPS workload 的全局 offered load；`--udp-mtu-pps` 单独控制 1432-byte
+MTU payload，省略时才继承前者。两者都应先用 raw pilot 找到链路可持续范围，再分别生成
 25%/50%/75% 三套矩阵，不能把某台设备的默认 100 kpps 当成统一负载结论。`full` 默认
 1 次额外 warmup repetition 加 5 次正式重复，`core` 为 1+3，`smoke` 为 0+1；这里的 0
 不取消每轮必须执行的路径证明预热。每个 block 前后仍执行 raw control。自定义参数只

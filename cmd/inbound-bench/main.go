@@ -103,6 +103,7 @@ func run(arguments []string) error {
 		duration := flags.Int64("duration-ms", 0, "bulk and UDP PPS duration (0 uses preset default)")
 		idleDuration := flags.Int64("idle-duration-ms", 0, "idle TCP residence duration (0 uses preset default)")
 		udpPPS := flags.Int("udp-pps", 0, "total offered UDP packets per second (0 uses preset default)")
+		udpMTUPPS := flags.Int("udp-mtu-pps", 0, "offered PPS for the MTU payload workload (0 uses udp-pps)")
 		cooldown := flags.Int64("cooldown-ms", 1_000, "delay between matrix jobs; UDP PPS jobs also require a raw health probe")
 		failFast := flags.Bool("fail-fast", true, "stop a generated matrix after the first invalid job")
 		if err := flags.Parse(arguments[1:]); err != nil {
@@ -115,7 +116,8 @@ func run(arguments []string) error {
 			MatrixID: *matrixID, OutputDirectory: *results, SingBoxBinary: *singBox, Target: *target, RawTarget: *rawTarget,
 			OutboundInterface: *outboundInterface, WorkerUID: uint32(*workerUID), Seed: *seed,
 			WarmupRepetitions: *warmups, Repetitions: *repetitions, Duration: *duration,
-			IdleDuration: *idleDuration, UDPPPS: *udpPPS, CooldownMS: *cooldown, FailFast: *failFast, Preset: *preset,
+			IdleDuration: *idleDuration, UDPPPS: *udpPPS, UDPMTUPPS: *udpMTUPPS,
+			CooldownMS: *cooldown, FailFast: *failFast, Preset: *preset,
 			Subjects: parseSubjectList(*subjects), Workloads: splitCommaList(*workloads),
 		})
 		if err != nil {

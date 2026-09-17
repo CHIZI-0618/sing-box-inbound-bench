@@ -24,6 +24,7 @@ type Options struct {
 	Duration          int64
 	IdleDuration      int64
 	UDPPPS            int
+	UDPMTUPPS         int
 	CooldownMS        int64
 	FailFast          bool
 	Preset            string
@@ -117,7 +118,7 @@ func Generate(options Options) (protocol.MatrixConfig, error) {
 }
 
 func applyPresetDefaults(options *Options) error {
-	if options.WarmupRepetitions < -1 || options.Repetitions < 0 || options.Duration < 0 || options.IdleDuration < 0 || options.UDPPPS < 0 {
+	if options.WarmupRepetitions < -1 || options.Repetitions < 0 || options.Duration < 0 || options.IdleDuration < 0 || options.UDPPPS < 0 || options.UDPMTUPPS < 0 {
 		return errors.New("warmups must be -1 or non-negative; repetitions, durations, and UDP PPS cannot be negative")
 	}
 	switch options.Preset {
@@ -174,6 +175,9 @@ func applyPresetDefaults(options *Options) error {
 	}
 	if options.WarmupRepetitions == -1 {
 		options.WarmupRepetitions = 0
+	}
+	if options.UDPMTUPPS == 0 {
+		options.UDPMTUPPS = options.UDPPPS
 	}
 	return nil
 }
@@ -262,6 +266,9 @@ func workloads(options Options, target string) ([]workloadTemplate, error) {
 		case protocol.ModePPS:
 			config.DurationMS = options.Duration
 			config.OfferedPPS = options.UDPPPS
+			if result[index].name == "udp-mtu" {
+				config.OfferedPPS = options.UDPMTUPPS
+			}
 			if strings.HasPrefix(result[index].name, "udp-pps-64") {
 				config.Flows = 64
 			}

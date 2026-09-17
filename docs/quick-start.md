@@ -42,15 +42,17 @@ tuple. Confirm the raw baseline first.
   --worker-uid 2000 \
   --cooldown-ms 1000 \
   --fail-fast=true \
-  --udp-pps 100000
+  --udp-pps 100000 \
+  --udp-mtu-pps 10000
 ```
 
 Start with `--preset smoke` (22 cases), continue with `core` (114) after the topology is proven, and
 use `full` (168) only for the publishable run. `--subjects raw,ebpf-tc,ebpf-cgroup` and
 `--workloads standby,tcp-rtt,udp-rtt,udp-rtt-unconnected` can create an explicit diagnostic subset.
-Run a raw-only pilot before choosing `--udp-pps`. Generate separate 25%, 50% and 75% offered-load
-matrices when comparing efficiency. Never silently edit a matrix after a run starts; resume rejects
-configuration drift.
+Run a raw-only pilot before choosing `--udp-pps`. Use `--udp-mtu-pps` for the separate 1432-byte
+payload rate; it inherits `--udp-pps` only when omitted. Generate separate 25%, 50% and 75%
+offered-load matrices when comparing efficiency. Never silently edit a matrix after a run starts;
+resume rejects configuration drift.
 
 Generated matrices wait one second between jobs by default. After every UDP PPS job, the runner also
 probes the raw physical target with eight low-rate UDP echoes and retries up to five times before it

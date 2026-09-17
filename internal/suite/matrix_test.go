@@ -127,3 +127,18 @@ func TestGenerateCarriesMatrixCooldown(t *testing.T) {
 		t.Fatal("fail_fast was not preserved")
 	}
 }
+
+func TestGenerateSeparatesMTUOfferedLoad(t *testing.T) {
+	matrix, err := Generate(Options{
+		MatrixID: "mtu-rate", OutputDirectory: "results", SingBoxBinary: "/tmp/sing-box",
+		Target: "192.0.2.2:19090", OutboundInterface: "eth0", WorkerUID: 2000,
+		Preset: PresetSmoke, Subjects: []protocol.SubjectKind{protocol.SubjectRaw},
+		Workloads: []string{"udp-pps-1", "udp-mtu"}, UDPPPS: 2000, UDPMTUPPS: 500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matrix.Cases) != 2 || matrix.Cases[0].Workload.OfferedPPS != 2000 || matrix.Cases[1].Workload.OfferedPPS != 500 {
+		t.Fatalf("cases=%+v", matrix.Cases)
+	}
+}
