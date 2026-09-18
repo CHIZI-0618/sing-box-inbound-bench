@@ -526,6 +526,12 @@ func runShort(
 		counters.bytesReceived.Add(localCounters.bytesReceived.Load())
 		*paths = append(*paths, localPaths...)
 		if err == nil {
+			if len(localLatency) != 1 || localCounters.operations.Load() != 1 {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return errors.New("short TCP attempt completed without one latency sample")
+			}
 			*latencies = append(*latencies, time.Since(started).Nanoseconds())
 			*connectLatencies = append(*connectLatencies, connectLatency.Nanoseconds())
 			*applicationLatencies = append(*applicationLatencies, localLatency[0])
