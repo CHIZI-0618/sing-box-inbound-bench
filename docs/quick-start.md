@@ -97,6 +97,10 @@ from aggregation. A complete directory also needs:
   visible as measured reliability outcomes instead of being discarded;
 - no eBPF attachment/state/recovery change or failure-counter increase between runtime snapshots;
 - stable temperature/frequency conditions and a non-bottlenecked server;
+- for TCP short outliers, inspect `connect_latency_ns`, `application_latency_ns` and
+  `resources.system_tcp` together; a roughly one-second connect spike accompanied by
+  `TcpExt.TCPSynRetrans` is network/handshake evidence, while host-wide TCP counters can include
+  unrelated device traffic and are not proof by themselves;
 - binary hashes and exact source/dependency revisions;
 - no mixing of protocol versions, topologies, MTUs or offered loads.
 

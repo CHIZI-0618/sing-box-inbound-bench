@@ -1,15 +1,17 @@
 # sing-box 透明入站横向基准测试方案
 
-> 状态：完整可执行测试工具；尚待不同 Linux/Android 设备提交真实样本。本文档不包含
-> 任何未经本仓库协议采集的性能结论。
+> 状态：完整可执行测试工具；已有单台 Android 真机样本，仍待不同 Linux/Android 设备
+> 交叉验证。本文档不包含任何未经本仓库协议采集的性能结论。
 
 执行入口：[快速开始](docs/quick-start.md)；Android 部署与恢复：
-[Android execution and recovery](docs/android.md)。
+[Android execution and recovery](docs/android.md)；首份真机样本：
+[2026-09-18 正式真机横评报告](docs/formal-real-device-report-20260918.md)。
 
 当前原型已经实现：
 
 - 版本化配置、manifest 和逐 repetition 结果格式；
-- 原生 TCP echo、真正单向连续流的 bulk upload/download、短连接 client/server；
+- 原生 TCP echo、真正单向连续流的 bulk upload/download、短连接 client/server；TCP short
+  同时记录总耗时、建连耗时和建连后的应用回显耗时；
 - TCP `idle` 会在连接仍保持打开时同步采样 worker 与 sing-box，用于
   1/250/500/750/1000 连接的内存、FD 与 socket 曲线；
 - 原生 UDP echo 与按全局速率调度的开放环固定 offered-load PPS client/server；
@@ -19,7 +21,8 @@
 - 客户端与 sing-box 的 CPU、I/O、RSS/PSS/USS/HWM/swap、fault、context switch、
   thread/FD/socket 分账；
 - 整机及逐核 CPU、NET_RX/NET_TX softirq、fault、migration、conntrack、指定接口
-  bytes/packets/drop/error，以及温度和 CPU 频率前后快照；
+  bytes/packets/drop/error，以及温度和 CPU 频率前后快照；Linux/Android 还记录测量窗口内
+  TCP 重传、SYN 重传、listen overflow/drop 等主机级计数器增量；
 - 任一步失败后仍执行 Stop、Cleanup、VerifyRestore 的事务生命周期测试；
 - 捕获 SIGINT/SIGTERM 后进入有界清理，并为每个阶段记录起止时间和错误；
 - 在删除临时状态前保存脱敏配置、内核探测、stdout、stderr 及 SHA-256；
@@ -36,11 +39,11 @@
 - `summarize` 仅聚合非 warmup 且 valid 的 repetition，输出 `summary.json`、
   `summary.md` 和超过 5% 的 raw 漂移告警。
 
-eBPF 两个 subject 当前完成的是配置、只加载不挂载的内核能力探测、运行时 attachment
-证明和生命周期框架；它们已经有无设备 fake-runner 测试和 Android 自动部署/恢复编排，
-但当前提交尚未连接真机完成厂商内核验证。worker 已会在创建任何 workload socket 前加入
-专用 cgroup、切换目标 UID 并向 controller 回报验证结果，但连接真机前不会宣称 eBPF
-性能执行链已经验证完成。eBPF 测试二进制必须启用 `with_ebpf`；运行时诊断通过内置
+eBPF 两个 subject 已完成配置、只加载不挂载的内核能力探测、运行时 attachment 证明和
+生命周期框架，并在一台 Android 16 / GKI 6.6 真机上完成 local TC 与 local cgroup 执行链、
+失败恢复和生产服务恢复验证；这不代表其他厂商内核、shared/hybrid、IPv6 或 USB 拓扑已经
+覆盖。worker 会在创建任何 workload socket 前加入专用 cgroup、切换目标 UID，并向
+controller 回报验证结果。eBPF 测试二进制必须启用 `with_ebpf`；运行时诊断通过内置
 sing-box API 的 `ebpf` RPC 获取，不依赖 Clash API 或 `with_clash_api`。所有非 raw subject
 使用同一份二进制，并统一启动同一只读 API 服务，避免把 API 服务的内存与待机成本只
 计入 eBPF subject；只有 eBPF case 会在正式计时窗口外查询诊断。
@@ -66,7 +69,9 @@ token 写入结果和 sing-box 配置证据前会被替换为 `<redacted>`。每
 TCP short 的单连接传输失败和 TCP idle 的建连失败属于被测可靠性/容量结果：worker 会保留
 其余成功连接，在 `failed` 保留失败数，并由汇总输出 `Success %`；帧、校验和或路径证明
 损坏仍会令 repetition invalid。`Success %` 的分母包含成功操作、TCP `failed` 和 UDP
-`lost`，不会把 PPS 丢包显示成 100% 成功。
+`lost`，不会把 PPS 丢包显示成 100% 成功。TCP short 的 `latency_ns` 仍表示用户观察到的
+完整操作耗时，`connect_latency_ns` 与 `application_latency_ns` 分别用于区分建连停顿和
+连接建立后的转发/服务端响应停顿；三组数据只记录成功操作并保持相同的 worker 顺序。
 UDP PPS 的 Ops/s 与 Mbit/s 使用 offered-load 的 active 窗口；超时收尾的 drain 时间单独
 保留在 workload timing 中，不会再次作为吞吐惩罚。CPU 利用率仍按完整测量 wall time。
 
@@ -408,6 +413,8 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 
 - `/proc/stat` 总 CPU；
 - `/proc/softirqs` 的 NET_RX、NET_TX；
+- `/proc/net/snmp` 与 `/proc/net/netstat` 中选定的 TCP 建连、重传、超时、listen
+  overflow/drop 计数器；
 - context switch、migration、major/minor fault；
 - 接口 bytes、packets、drop、error；
 - conntrack count；
@@ -425,6 +432,11 @@ CPU ms/1000 operations = process_cpu_seconds * 1e6 / completed_operations
 只看 sing-box PID CPU 会漏掉 eBPF、netfilter、路由、softirq 等内核成本。只看 PSS 会
 漏掉 BPF map、conntrack 和 TUN 内核队列。用户态和内核态指标必须并列，不能强行合成
 一个看似精确的数字。
+
+TCP 协议计数是整机计数而不是某个 worker 或 sing-box 进程的私有计数，后台应用可能贡献
+增量。它们用于判断“秒级尾延迟是否同时伴随 SYN 重传或监听队列溢出”，不能脱离分阶段
+延迟、raw control 和运行环境单独归因。`summary.md` 只列出中位数非零的 case，完整的逐轮
+计数仍保留在 repetition JSON 的 `resources.system_tcp` 中。
 
 工具会从 sing-box 的 `/proc/PID/fd` 与 `fdinfo` 去重枚举其持有的 BPF map，记录 map ID、
 类型、key/value size、容量、flags 以及内核在该平台实际公开的 `memlock`。`memlock=0`
@@ -528,15 +540,15 @@ inbound 的变化。不要仅报告算术平均值。
 Environment: <device/kernel/build/link>
 Workload: TCP short, concurrency 32, 64B request/response
 
-Subject             CPS   p50 ms   p99 ms   sb CPU/1k   system CPU/1k   failures
-raw                  ...   ...      ...      n/a         ...             ...
-direct               ...   ...      ...      ...         ...             ...
-redirect             ...   ...      ...      ...         ...             ...
-tproxy               ...   ...      ...      ...         ...             ...
-tun                   ...   ...      ...      ...         ...             ...
-tun-auto-redirect     ...   ...      ...      ...         ...             ...
-ebpf-tc               ...   ...      ...      ...         ...             ...
-ebpf-cgroup           ...   ...      ...      ...         ...             ...
+Subject             CPS   total p99   connect p99   app p99   SYN retrans   failures
+raw                  ...   ...         ...           ...       ...           ...
+direct               ...   ...         ...           ...       ...           ...
+redirect             ...   ...         ...           ...       ...           ...
+tproxy               ...   ...         ...           ...       ...           ...
+tun                   ...   ...         ...           ...       ...           ...
+tun-auto-redirect     ...   ...         ...           ...       ...           ...
+ebpf-tc               ...   ...         ...           ...       ...           ...
+ebpf-cgroup           ...   ...         ...           ...       ...           ...
 ```
 
 报告必须同时附上限制说明，不得将一个设备、一个内核和一条链路的结果外推为所有
