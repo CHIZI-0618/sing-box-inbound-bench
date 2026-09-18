@@ -114,6 +114,7 @@
         "system_cpu_ticks": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
         "system_cpu_by_core": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "integer", "minimum": 0 } } },
         "system_softirqs": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "system_tcp": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
         "system_context_switches": { "type": "integer", "minimum": 0 },
         "system_processes_created": { "type": "integer", "minimum": 0 },
         "system_page_faults": { "type": "integer", "minimum": 0 },

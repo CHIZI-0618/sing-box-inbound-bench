@@ -749,6 +749,7 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 			SubjectBPFMapMemlockBytes: subjectDelta.BPFMapMemlockBytes, SubjectBPFMaps: convertBPFMaps(subjectDelta.BPFMaps),
 			SystemCPUTicks: hostDelta.System.CPUTicks, SystemCPUByCore: hostDelta.System.CPUByCore,
 			SystemSoftIRQs: hostDelta.System.SoftIRQs, SystemContextSwitches: hostDelta.System.ContextSwitches,
+			SystemTCP:              hostDelta.System.TCP,
 			SystemProcessesCreated: hostDelta.System.Processes, SystemPageFaults: hostDelta.System.PageFaults,
 			SystemMajorPageFaults: hostDelta.System.MajorPageFaults, SystemMigrations: hostDelta.System.Migrations,
 			Interfaces: convertInterfaces(hostDelta.Interfaces), ThermalBefore: hostBefore.Thermal, ThermalAfter: hostAfter.Thermal,

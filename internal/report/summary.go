@@ -40,6 +40,10 @@ type CaseSummary struct {
 	CPUIdleTransitions      float64                 `json:"cpu_idle_transitions_per_second_median,omitempty"`
 	WakeupSourceEvents      float64                 `json:"wakeup_source_events_per_second_median,omitempty"`
 	WakeupCount             float64                 `json:"wakeup_count_per_second_median,omitempty"`
+	TCPRetransSegments      float64                 `json:"tcp_retrans_segments_median,omitempty"`
+	TCPSynRetransmissions   float64                 `json:"tcp_syn_retransmissions_median,omitempty"`
+	TCPListenOverflows      float64                 `json:"tcp_listen_overflows_median,omitempty"`
+	TCPListenDrops          float64                 `json:"tcp_listen_drops_median,omitempty"`
 	RelativeRawPercent      float64                 `json:"relative_raw_percent,omitempty"`
 	RelativeDirectPercent   float64                 `json:"relative_direct_percent,omitempty"`
 	Statistics              map[string]Distribution `json:"statistics,omitempty"`
@@ -72,6 +76,8 @@ type Summary struct {
 type caseValues struct {
 	ops, success, bits, clientCPU, subjectCPU, cpuGiB, rss, pss, uss, bpf []float64
 	contextSwitches, idleTransitions, wakeupEvents, wakeupCount           []float64
+	tcpRetransSegments, tcpSynRetransmissions, tcpListenOverflows         []float64
+	tcpListenDrops                                                        []float64
 	latency, connectLatency, applicationLatency                           []int64
 	valid, invalid                                                        int
 }
@@ -217,6 +223,15 @@ func appendRepetition(value *caseValues, repetition protocol.Repetition, config 
 	value.pss = append(value.pss, float64(repetition.Resources.SubjectPSSBytes))
 	value.uss = append(value.uss, float64(repetition.Resources.SubjectUSSBytes))
 	value.bpf = append(value.bpf, float64(repetition.Resources.SubjectBPFMapMemlockBytes))
+	appendTCPStat := func(target *[]float64, name string) {
+		if stat, exists := repetition.Resources.SystemTCP[name]; exists {
+			*target = append(*target, float64(stat))
+		}
+	}
+	appendTCPStat(&value.tcpRetransSegments, "Tcp.RetransSegs")
+	appendTCPStat(&value.tcpSynRetransmissions, "TcpExt.TCPSynRetrans")
+	appendTCPStat(&value.tcpListenOverflows, "TcpExt.ListenOverflows")
+	appendTCPStat(&value.tcpListenDrops, "TcpExt.ListenDrops")
 	value.latency = append(value.latency, repetition.LatencyNS...)
 	value.connectLatency = append(value.connectLatency, repetition.ConnectLatencyNS...)
 	value.applicationLatency = append(value.applicationLatency, repetition.ApplicationLatencyNS...)
@@ -242,6 +257,10 @@ func summarizeCase(config protocol.Config, value *caseValues) CaseSummary {
 	item.CPUIdleTransitions = median(value.idleTransitions)
 	item.WakeupSourceEvents = median(value.wakeupEvents)
 	item.WakeupCount = median(value.wakeupCount)
+	item.TCPRetransSegments = median(value.tcpRetransSegments)
+	item.TCPSynRetransmissions = median(value.tcpSynRetransmissions)
+	item.TCPListenOverflows = median(value.tcpListenOverflows)
+	item.TCPListenDrops = median(value.tcpListenDrops)
 	item.LatencyP50NS = percentile(value.latency, 0.50)
 	item.LatencyP95NS = percentile(value.latency, 0.95)
 	item.LatencyP99NS = percentile(value.latency, 0.99)
@@ -268,6 +287,10 @@ func summarizeCase(config protocol.Config, value *caseValues) CaseSummary {
 	addDistribution(item.Statistics, "cpu_idle_transitions_per_second", value.idleTransitions)
 	addDistribution(item.Statistics, "wakeup_source_events_per_second", value.wakeupEvents)
 	addDistribution(item.Statistics, "wakeup_count_per_second", value.wakeupCount)
+	addDistribution(item.Statistics, "tcp_retrans_segments", value.tcpRetransSegments)
+	addDistribution(item.Statistics, "tcp_syn_retransmissions", value.tcpSynRetransmissions)
+	addDistribution(item.Statistics, "tcp_listen_overflows", value.tcpListenOverflows)
+	addDistribution(item.Statistics, "tcp_listen_drops", value.tcpListenDrops)
 	return item
 }
 
@@ -302,6 +325,20 @@ func Markdown(summary Summary) []byte {
 				float64(item.ApplicationLatencyP95NS)/1e6,
 				float64(item.ApplicationLatencyP99NS)/1e6,
 			)
+		}
+	}
+	tcpDiagnostics := false
+	for _, item := range summary.Cases {
+		if item.TCPRetransSegments > 0 || item.TCPSynRetransmissions > 0 || item.TCPListenOverflows > 0 || item.TCPListenDrops > 0 {
+			if !tcpDiagnostics {
+				output.WriteString("\n## Host TCP diagnostics\n\n")
+				output.WriteString("These are host-wide counter deltas during the measurement window; background traffic can contribute. Cases with all-zero medians are omitted.\n\n")
+				output.WriteString("| Case | RetransSegs | TCPSynRetrans | ListenOverflows | ListenDrops |\n")
+				output.WriteString("| --- | ---: | ---: | ---: | ---: |\n")
+				tcpDiagnostics = true
+			}
+			fmt.Fprintf(&output, "| %s | %.1f | %.1f | %.1f | %.1f |\n",
+				item.CaseID, item.TCPRetransSegments, item.TCPSynRetransmissions, item.TCPListenOverflows, item.TCPListenDrops)
 		}
 	}
 	if len(summary.Warnings) > 0 {

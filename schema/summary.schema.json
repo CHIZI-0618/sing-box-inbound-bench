@@ -34,6 +34,10 @@
           "cpu_idle_transitions_per_second_median": { "type": "number", "minimum": 0 },
           "wakeup_source_events_per_second_median": { "type": "number", "minimum": 0 },
           "wakeup_count_per_second_median": { "type": "number", "minimum": 0 },
+          "tcp_retrans_segments_median": { "type": "number", "minimum": 0 },
+          "tcp_syn_retransmissions_median": { "type": "number", "minimum": 0 },
+          "tcp_listen_overflows_median": { "type": "number", "minimum": 0 },
+          "tcp_listen_drops_median": { "type": "number", "minimum": 0 },
           "relative_raw_percent": { "type": "number", "minimum": 0 }, "relative_direct_percent": { "type": "number", "minimum": 0 },
           "statistics": {
             "type": "object",

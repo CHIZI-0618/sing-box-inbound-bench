@@ -107,6 +107,27 @@ func TestSummaryReportsShortConnectionPhases(t *testing.T) {
 	}
 }
 
+func TestSummaryReportsHostTCPDiagnostics(t *testing.T) {
+	value := &caseValues{}
+	repetition := protocol.Repetition{
+		DurationNS: int64(time.Second), Counters: protocol.Counters{Operations: 32},
+		Resources: protocol.ResourceDelta{SystemTCP: map[string]uint64{
+			"Tcp.RetransSegs": 32, "TcpExt.TCPSynRetrans": 32,
+			"TcpExt.ListenOverflows": 1, "TcpExt.ListenDrops": 2,
+		}},
+		Validity: protocol.Validity{Valid: true},
+	}
+	appendRepetition(value, repetition, protocol.Config{})
+	summary := summarizeCase(protocol.Config{RunID: "short", Subject: protocol.SubjectConfig{Kind: protocol.SubjectEBPFCgroup}}, value)
+	if summary.TCPRetransSegments != 32 || summary.TCPSynRetransmissions != 32 || summary.TCPListenOverflows != 1 || summary.TCPListenDrops != 2 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	markdown := string(Markdown(Summary{MatrixID: "test", Cases: []CaseSummary{summary}}))
+	if !strings.Contains(markdown, "## Host TCP diagnostics") || !strings.Contains(markdown, "| short | 32.0 | 32.0 | 1.0 | 2.0 |") {
+		t.Fatalf("markdown=%s", markdown)
+	}
+}
+
 func TestSummaryIncludesUDPLossInSuccessRate(t *testing.T) {
 	value := &caseValues{}
 	repetition := protocol.Repetition{

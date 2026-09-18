@@ -245,6 +245,7 @@ type ResourceDelta struct {
 	SystemCPUTicks               []uint64                        `json:"system_cpu_ticks,omitempty"`
 	SystemCPUByCore              map[string][]uint64             `json:"system_cpu_by_core,omitempty"`
 	SystemSoftIRQs               map[string]uint64               `json:"system_softirqs,omitempty"`
+	SystemTCP                    map[string]uint64               `json:"system_tcp,omitempty"`
 	SystemContextSwitches        uint64                          `json:"system_context_switches,omitempty"`
 	SystemProcessesCreated       uint64                          `json:"system_processes_created,omitempty"`
 	SystemPageFaults             uint64                          `json:"system_page_faults,omitempty"`

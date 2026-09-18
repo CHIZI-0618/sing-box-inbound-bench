@@ -13,6 +13,7 @@ type SystemSnapshot struct {
 	PageFaults      uint64              `json:"page_faults"`
 	MajorPageFaults uint64              `json:"major_page_faults"`
 	Migrations      uint64              `json:"migrations"`
+	TCP             map[string]uint64   `json:"tcp,omitempty"`
 }
 
 func ReadSystem() (SystemSnapshot, error) {
