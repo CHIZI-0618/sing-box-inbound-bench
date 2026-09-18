@@ -12,31 +12,37 @@ import (
 )
 
 type CaseSummary struct {
-	CaseID                 string                  `json:"case_id"`
-	Subject                protocol.SubjectKind    `json:"subject"`
-	ValidRepetitions       int                     `json:"valid_repetitions"`
-	InvalidRepetitions     int                     `json:"invalid_repetitions"`
-	OperationsPerSecond    float64                 `json:"operations_per_second_median"`
-	SuccessPercent         float64                 `json:"success_percent_median,omitempty"`
-	DeliveredBitsPerSecond float64                 `json:"delivered_bits_per_second_median"`
-	LatencyP50NS           int64                   `json:"latency_p50_ns,omitempty"`
-	LatencyP95NS           int64                   `json:"latency_p95_ns,omitempty"`
-	LatencyP99NS           int64                   `json:"latency_p99_ns,omitempty"`
-	LatencyP999NS          int64                   `json:"latency_p999_ns,omitempty"`
-	ClientCPUCores         float64                 `json:"client_cpu_cores_median"`
-	SubjectCPUCores        float64                 `json:"subject_cpu_cores_median"`
-	SubjectCPUSecondsGiB   float64                 `json:"subject_cpu_seconds_per_gib_median,omitempty"`
-	SubjectRSSBytes        float64                 `json:"subject_rss_bytes_median,omitempty"`
-	SubjectPSSBytes        float64                 `json:"subject_pss_bytes_median,omitempty"`
-	SubjectUSSBytes        float64                 `json:"subject_uss_bytes_median,omitempty"`
-	SubjectBPFMemlockBytes float64                 `json:"subject_bpf_map_memlock_bytes_median,omitempty"`
-	SystemContextSwitches  float64                 `json:"system_context_switches_per_second_median,omitempty"`
-	CPUIdleTransitions     float64                 `json:"cpu_idle_transitions_per_second_median,omitempty"`
-	WakeupSourceEvents     float64                 `json:"wakeup_source_events_per_second_median,omitempty"`
-	WakeupCount            float64                 `json:"wakeup_count_per_second_median,omitempty"`
-	RelativeRawPercent     float64                 `json:"relative_raw_percent,omitempty"`
-	RelativeDirectPercent  float64                 `json:"relative_direct_percent,omitempty"`
-	Statistics             map[string]Distribution `json:"statistics,omitempty"`
+	CaseID                  string                  `json:"case_id"`
+	Subject                 protocol.SubjectKind    `json:"subject"`
+	ValidRepetitions        int                     `json:"valid_repetitions"`
+	InvalidRepetitions      int                     `json:"invalid_repetitions"`
+	OperationsPerSecond     float64                 `json:"operations_per_second_median"`
+	SuccessPercent          float64                 `json:"success_percent_median,omitempty"`
+	DeliveredBitsPerSecond  float64                 `json:"delivered_bits_per_second_median"`
+	LatencyP50NS            int64                   `json:"latency_p50_ns,omitempty"`
+	LatencyP95NS            int64                   `json:"latency_p95_ns,omitempty"`
+	LatencyP99NS            int64                   `json:"latency_p99_ns,omitempty"`
+	LatencyP999NS           int64                   `json:"latency_p999_ns,omitempty"`
+	ConnectLatencyP50NS     int64                   `json:"connect_latency_p50_ns,omitempty"`
+	ConnectLatencyP95NS     int64                   `json:"connect_latency_p95_ns,omitempty"`
+	ConnectLatencyP99NS     int64                   `json:"connect_latency_p99_ns,omitempty"`
+	ApplicationLatencyP50NS int64                   `json:"application_latency_p50_ns,omitempty"`
+	ApplicationLatencyP95NS int64                   `json:"application_latency_p95_ns,omitempty"`
+	ApplicationLatencyP99NS int64                   `json:"application_latency_p99_ns,omitempty"`
+	ClientCPUCores          float64                 `json:"client_cpu_cores_median"`
+	SubjectCPUCores         float64                 `json:"subject_cpu_cores_median"`
+	SubjectCPUSecondsGiB    float64                 `json:"subject_cpu_seconds_per_gib_median,omitempty"`
+	SubjectRSSBytes         float64                 `json:"subject_rss_bytes_median,omitempty"`
+	SubjectPSSBytes         float64                 `json:"subject_pss_bytes_median,omitempty"`
+	SubjectUSSBytes         float64                 `json:"subject_uss_bytes_median,omitempty"`
+	SubjectBPFMemlockBytes  float64                 `json:"subject_bpf_map_memlock_bytes_median,omitempty"`
+	SystemContextSwitches   float64                 `json:"system_context_switches_per_second_median,omitempty"`
+	CPUIdleTransitions      float64                 `json:"cpu_idle_transitions_per_second_median,omitempty"`
+	WakeupSourceEvents      float64                 `json:"wakeup_source_events_per_second_median,omitempty"`
+	WakeupCount             float64                 `json:"wakeup_count_per_second_median,omitempty"`
+	RelativeRawPercent      float64                 `json:"relative_raw_percent,omitempty"`
+	RelativeDirectPercent   float64                 `json:"relative_direct_percent,omitempty"`
+	Statistics              map[string]Distribution `json:"statistics,omitempty"`
 }
 
 type Distribution struct {
@@ -66,7 +72,7 @@ type Summary struct {
 type caseValues struct {
 	ops, success, bits, clientCPU, subjectCPU, cpuGiB, rss, pss, uss, bpf []float64
 	contextSwitches, idleTransitions, wakeupEvents, wakeupCount           []float64
-	latency                                                               []int64
+	latency, connectLatency, applicationLatency                           []int64
 	valid, invalid                                                        int
 }
 
@@ -212,6 +218,8 @@ func appendRepetition(value *caseValues, repetition protocol.Repetition, config 
 	value.uss = append(value.uss, float64(repetition.Resources.SubjectUSSBytes))
 	value.bpf = append(value.bpf, float64(repetition.Resources.SubjectBPFMapMemlockBytes))
 	value.latency = append(value.latency, repetition.LatencyNS...)
+	value.connectLatency = append(value.connectLatency, repetition.ConnectLatencyNS...)
+	value.applicationLatency = append(value.applicationLatency, repetition.ApplicationLatencyNS...)
 }
 
 func summarizeCase(config protocol.Config, value *caseValues) CaseSummary {
@@ -238,6 +246,12 @@ func summarizeCase(config protocol.Config, value *caseValues) CaseSummary {
 	item.LatencyP95NS = percentile(value.latency, 0.95)
 	item.LatencyP99NS = percentile(value.latency, 0.99)
 	item.LatencyP999NS = percentile(value.latency, 0.999)
+	item.ConnectLatencyP50NS = percentile(value.connectLatency, 0.50)
+	item.ConnectLatencyP95NS = percentile(value.connectLatency, 0.95)
+	item.ConnectLatencyP99NS = percentile(value.connectLatency, 0.99)
+	item.ApplicationLatencyP50NS = percentile(value.applicationLatency, 0.50)
+	item.ApplicationLatencyP95NS = percentile(value.applicationLatency, 0.95)
+	item.ApplicationLatencyP99NS = percentile(value.applicationLatency, 0.99)
 	item.Statistics = map[string]Distribution{
 		"operations_per_second":              distribution(value.ops),
 		"success_percent":                    distribution(value.success),
@@ -269,6 +283,26 @@ func Markdown(summary Summary) []byte {
 			item.SuccessPercent, item.DeliveredBitsPerSecond/1e6, item.RelativeRawPercent, float64(item.LatencyP50NS)/1e6,
 			float64(item.LatencyP95NS)/1e6, float64(item.LatencyP99NS)/1e6, item.ClientCPUCores,
 			item.SubjectCPUCores, item.SubjectPSSBytes/(1<<20), item.SubjectBPFMemlockBytes/(1<<20))
+	}
+	shortPhases := false
+	for _, item := range summary.Cases {
+		if item.ConnectLatencyP95NS > 0 || item.ApplicationLatencyP95NS > 0 {
+			if !shortPhases {
+				output.WriteString("\n## TCP short phases\n\n")
+				output.WriteString("| Case | Connect p50 ms | Connect p95 ms | Connect p99 ms | Application p50 ms | Application p95 ms | Application p99 ms |\n")
+				output.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+				shortPhases = true
+			}
+			fmt.Fprintf(&output, "| %s | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f |\n",
+				item.CaseID,
+				float64(item.ConnectLatencyP50NS)/1e6,
+				float64(item.ConnectLatencyP95NS)/1e6,
+				float64(item.ConnectLatencyP99NS)/1e6,
+				float64(item.ApplicationLatencyP50NS)/1e6,
+				float64(item.ApplicationLatencyP95NS)/1e6,
+				float64(item.ApplicationLatencyP99NS)/1e6,
+			)
+		}
 	}
 	if len(summary.Warnings) > 0 {
 		output.WriteString("\n## Validity warnings\n\n")

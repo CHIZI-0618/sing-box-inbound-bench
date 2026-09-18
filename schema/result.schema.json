@@ -30,6 +30,8 @@
       }
     },
     "latency_ns": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+    "connect_latency_ns": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+    "application_latency_ns": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
     "worker": {
       "type": "object",
       "additionalProperties": false,

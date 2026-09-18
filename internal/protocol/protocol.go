@@ -194,10 +194,12 @@ type WorkloadTiming struct {
 }
 
 type WorkloadResult struct {
-	Counters    Counters             `json:"counters"`
-	LatencyNS   []int64              `json:"latency_ns,omitempty"`
-	SocketPaths []SocketPathEvidence `json:"socket_paths,omitempty"`
-	Timing      WorkloadTiming       `json:"timing"`
+	Counters             Counters             `json:"counters"`
+	LatencyNS            []int64              `json:"latency_ns,omitempty"`
+	ConnectLatencyNS     []int64              `json:"connect_latency_ns,omitempty"`
+	ApplicationLatencyNS []int64              `json:"application_latency_ns,omitempty"`
+	SocketPaths          []SocketPathEvidence `json:"socket_paths,omitempty"`
+	Timing               WorkloadTiming       `json:"timing"`
 }
 
 type ResourceDelta struct {
@@ -289,24 +291,26 @@ type InterfaceCounters struct {
 }
 
 type Repetition struct {
-	ProtocolVersion string              `json:"protocol_version"`
-	RunID           string              `json:"run_id"`
-	Subject         SubjectKind         `json:"subject"`
-	Index           int                 `json:"index"`
-	Warmup          bool                `json:"warmup"`
-	StartedAt       time.Time           `json:"started_at"`
-	DurationNS      int64               `json:"duration_ns"`
-	Counters        Counters            `json:"counters"`
-	LatencyNS       []int64             `json:"latency_ns,omitempty"`
-	Worker          *WorkerIdentity     `json:"worker,omitempty"`
-	WorkloadTiming  *WorkloadTiming     `json:"workload_timing,omitempty"`
-	Resources       ResourceDelta       `json:"resources"`
-	Runtime         *RuntimeDiagnostics `json:"runtime_diagnostics,omitempty"`
-	PathProof       PathProof           `json:"path_proof"`
-	Validity        Validity            `json:"validity"`
-	Execution       ExecutionTrace      `json:"execution"`
-	Artifacts       []ArtifactRecord    `json:"artifacts,omitempty"`
-	Metadata        json.RawMessage     `json:"metadata,omitempty"`
+	ProtocolVersion      string              `json:"protocol_version"`
+	RunID                string              `json:"run_id"`
+	Subject              SubjectKind         `json:"subject"`
+	Index                int                 `json:"index"`
+	Warmup               bool                `json:"warmup"`
+	StartedAt            time.Time           `json:"started_at"`
+	DurationNS           int64               `json:"duration_ns"`
+	Counters             Counters            `json:"counters"`
+	LatencyNS            []int64             `json:"latency_ns,omitempty"`
+	ConnectLatencyNS     []int64             `json:"connect_latency_ns,omitempty"`
+	ApplicationLatencyNS []int64             `json:"application_latency_ns,omitempty"`
+	Worker               *WorkerIdentity     `json:"worker,omitempty"`
+	WorkloadTiming       *WorkloadTiming     `json:"workload_timing,omitempty"`
+	Resources            ResourceDelta       `json:"resources"`
+	Runtime              *RuntimeDiagnostics `json:"runtime_diagnostics,omitempty"`
+	PathProof            PathProof           `json:"path_proof"`
+	Validity             Validity            `json:"validity"`
+	Execution            ExecutionTrace      `json:"execution"`
+	Artifacts            []ArtifactRecord    `json:"artifacts,omitempty"`
+	Metadata             json.RawMessage     `json:"metadata,omitempty"`
 }
 
 type RuntimeDiagnostics struct {

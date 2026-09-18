@@ -128,6 +128,15 @@ func TestTCPShortCountsTransportFailureAndContinues(t *testing.T) {
 	if result.Counters.Operations != 2 || result.Counters.Failed != 1 || result.Counters.Corrupt != 0 || len(result.LatencyNS) != 2 {
 		t.Fatalf("result=%+v", result)
 	}
+	if len(result.ConnectLatencyNS) != 2 || len(result.ApplicationLatencyNS) != 2 {
+		t.Fatalf("short phase latency counts: connect=%d application=%d", len(result.ConnectLatencyNS), len(result.ApplicationLatencyNS))
+	}
+	for index := range result.LatencyNS {
+		if result.ConnectLatencyNS[index] <= 0 || result.ApplicationLatencyNS[index] <= 0 ||
+			result.LatencyNS[index] < result.ConnectLatencyNS[index]+result.ApplicationLatencyNS[index] {
+			t.Fatalf("short phase latency %d: total=%d connect=%d application=%d", index, result.LatencyNS[index], result.ConnectLatencyNS[index], result.ApplicationLatencyNS[index])
+		}
+	}
 	for range 3 {
 		select {
 		case <-accepted:

@@ -260,6 +260,8 @@ func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadRes
 	}
 	var counters atomicCounters
 	latencyByWorker := make([][]int64, config.Connections)
+	connectLatencyByWorker := make([][]int64, config.Connections)
+	applicationLatencyByWorker := make([][]int64, config.Connections)
 	pathsByWorker := make([][]protocol.SocketPathEvidence, config.Connections)
 	var workers sync.WaitGroup
 	start := make(chan struct{})
@@ -271,13 +273,22 @@ func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadRes
 			var err error
 			switch config.Mode {
 			case protocol.ModeShort:
-				err = runShort(ctx, config, worker, &counters, &latencyByWorker[worker], &pathsByWorker[worker])
+				err = runShort(
+					ctx,
+					config,
+					worker,
+					&counters,
+					&latencyByWorker[worker],
+					&connectLatencyByWorker[worker],
+					&applicationLatencyByWorker[worker],
+					&pathsByWorker[worker],
+				)
 			case protocol.ModeBulkUpload:
 				err = runUpload(ctx, config, worker, &counters)
 			case protocol.ModeBulkDownload:
 				err = runDownload(ctx, config, worker, &counters)
 			default:
-				err = runEcho(ctx, config, worker, &counters, &latencyByWorker[worker], &pathsByWorker[worker])
+				_, err = runEcho(ctx, config, worker, &counters, &latencyByWorker[worker], &pathsByWorker[worker])
 			}
 			if err != nil && ctx.Err() == nil {
 				counters.setError(err)
@@ -287,8 +298,16 @@ func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadRes
 	close(start)
 	workers.Wait()
 	latencies := make([]int64, 0)
+	connectLatencies := make([]int64, 0)
+	applicationLatencies := make([]int64, 0)
 	for _, workerLatency := range latencyByWorker {
 		latencies = append(latencies, workerLatency...)
+	}
+	for _, workerLatency := range connectLatencyByWorker {
+		connectLatencies = append(connectLatencies, workerLatency...)
+	}
+	for _, workerLatency := range applicationLatencyByWorker {
+		applicationLatencies = append(applicationLatencies, workerLatency...)
 	}
 	var paths []protocol.SocketPathEvidence
 	for _, workerPaths := range pathsByWorker {
@@ -296,8 +315,10 @@ func RunDetailed(ctx context.Context, config ClientConfig) (protocol.WorkloadRes
 	}
 	finishedAt := time.Now()
 	return protocol.WorkloadResult{
-		Counters: counters.snapshot(), LatencyNS: latencies, SocketPaths: paths,
-		Timing: protocol.WorkloadTiming{StartedAt: startedAt, ActiveDurationNS: finishedAt.Sub(startedAt).Nanoseconds(), FinishedAt: finishedAt},
+		Counters: counters.snapshot(), LatencyNS: latencies,
+		ConnectLatencyNS: connectLatencies, ApplicationLatencyNS: applicationLatencies,
+		SocketPaths: paths,
+		Timing:      protocol.WorkloadTiming{StartedAt: startedAt, ActiveDurationNS: finishedAt.Sub(startedAt).Nanoseconds(), FinishedAt: finishedAt},
 	}, counters.err()
 }
 
@@ -395,11 +416,13 @@ func (c *atomicCounters) snapshot() protocol.Counters {
 	}
 }
 
-func runEcho(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) error {
+func runEcho(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) (time.Duration, error) {
+	dialStarted := time.Now()
 	connection, err := (&net.Dialer{Timeout: config.Timeout}).DialContext(ctx, "tcp", config.Target)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	connectLatency := time.Since(dialStarted)
 	defer connection.Close()
 	payload := make([]byte, config.PayloadBytes)
 	headerBuffer := make([]byte, headerSize)
@@ -409,7 +432,7 @@ func runEcho(ctx context.Context, config ClientConfig, worker int, counters *ato
 	end := endTime(config.Duration)
 	for completed := 0; requests == 0 || completed < requests; completed++ {
 		if ctx.Err() != nil || (!end.IsZero() && time.Now().After(end)) {
-			return nil
+			return connectLatency, nil
 		}
 		sequence++
 		fillPayload(payload, sequence)
@@ -423,56 +446,65 @@ func runEcho(ctx context.Context, config ClientConfig, worker int, counters *ato
 		}
 		started := time.Now()
 		if err = connection.SetDeadline(operationDeadline(started, end, config.Timeout)); err != nil {
-			return err
+			return connectLatency, err
 		}
 		writeHeader(headerBuffer, header)
 		if err = writeAll(connection, headerBuffer); err != nil {
-			return err
+			return connectLatency, err
 		}
 		if err = writeAll(connection, payload); err != nil {
-			return err
+			return connectLatency, err
 		}
 		counters.bytesSent.Add(uint64(len(payload)))
 		response, err := readHeader(connection, headerBuffer)
 		if err != nil {
-			return err
+			return connectLatency, err
 		}
 		expectedFlags := uint16(flagResponse)
 		if header.flags&flagProof != 0 {
 			expectedFlags |= flagProof
 		}
 		if response.flags != expectedFlags || response.sequence != sequence || response.operation != operation || response.length != uint32(len(responsePayload)) {
-			return errors.New("response header mismatch")
+			return connectLatency, errors.New("response header mismatch")
 		}
 		if header.flags&flagProof != 0 {
 			observed := make([]byte, protocol.EncodedEndpointSize)
 			if _, err = io.ReadFull(connection, observed); err != nil {
-				return err
+				return connectLatency, err
 			}
 			serverPeer, decodeErr := protocol.DecodeEndpoint(observed)
 			if decodeErr != nil {
-				return decodeErr
+				return connectLatency, decodeErr
 			}
 			clientLocal, canonicalErr := protocol.CanonicalEndpoint(connection.LocalAddr().String())
 			if canonicalErr != nil {
-				return canonicalErr
+				return connectLatency, canonicalErr
 			}
 			*paths = append(*paths, protocol.SocketPathEvidence{Network: "tcp", ClientLocal: clientLocal, ServerObservedPeer: serverPeer})
 		}
 		if _, err = io.ReadFull(connection, responsePayload); err != nil {
-			return err
+			return connectLatency, err
 		}
 		counters.bytesReceived.Add(uint64(len(responsePayload)))
 		if crc32.ChecksumIEEE(responsePayload) != response.checksum {
-			return errors.New("response checksum mismatch")
+			return connectLatency, errors.New("response checksum mismatch")
 		}
 		*latencies = append(*latencies, time.Since(started).Nanoseconds())
 		counters.operations.Add(1)
 	}
-	return nil
+	return connectLatency, nil
 }
 
-func runShort(ctx context.Context, config ClientConfig, worker int, counters *atomicCounters, latencies *[]int64, paths *[]protocol.SocketPathEvidence) error {
+func runShort(
+	ctx context.Context,
+	config ClientConfig,
+	worker int,
+	counters *atomicCounters,
+	latencies *[]int64,
+	connectLatencies *[]int64,
+	applicationLatencies *[]int64,
+	paths *[]protocol.SocketPathEvidence,
+) error {
 	requests := perWorkerRequests(config.Requests, config.Connections, worker)
 	end := endTime(config.Duration)
 	for completed := 0; requests == 0 || completed < requests; completed++ {
@@ -488,13 +520,15 @@ func runShort(ctx context.Context, config ClientConfig, worker int, counters *at
 		localCounters := &atomicCounters{}
 		var localLatency []int64
 		var localPaths []protocol.SocketPathEvidence
-		err := runEcho(ctx, one, worker+completed, localCounters, &localLatency, &localPaths)
+		connectLatency, err := runEcho(ctx, one, worker+completed, localCounters, &localLatency, &localPaths)
 		counters.operations.Add(localCounters.operations.Load())
 		counters.bytesSent.Add(localCounters.bytesSent.Load())
 		counters.bytesReceived.Add(localCounters.bytesReceived.Load())
 		*paths = append(*paths, localPaths...)
 		if err == nil {
 			*latencies = append(*latencies, time.Since(started).Nanoseconds())
+			*connectLatencies = append(*connectLatencies, connectLatency.Nanoseconds())
+			*applicationLatencies = append(*applicationLatencies, localLatency[0])
 			continue
 		}
 		if ctx.Err() != nil {

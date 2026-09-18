@@ -2,6 +2,7 @@ package report
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +86,24 @@ func TestSummaryReportsShortConnectionSuccessRate(t *testing.T) {
 	summary := summarizeCase(protocol.Config{RunID: "short", Subject: protocol.SubjectConfig{Kind: protocol.SubjectTProxy}}, value)
 	if summary.SuccessPercent != 98.4375 || summary.Statistics["success_percent"].Median != 98.4375 {
 		t.Fatalf("summary=%+v", summary)
+	}
+}
+
+func TestSummaryReportsShortConnectionPhases(t *testing.T) {
+	value := &caseValues{}
+	repetition := protocol.Repetition{
+		DurationNS: int64(time.Second), Counters: protocol.Counters{Operations: 2},
+		LatencyNS: []int64{100, 200}, ConnectLatencyNS: []int64{20, 40}, ApplicationLatencyNS: []int64{70, 150},
+		Validity: protocol.Validity{Valid: true},
+	}
+	appendRepetition(value, repetition, protocol.Config{})
+	summary := summarizeCase(protocol.Config{RunID: "short", Subject: protocol.SubjectConfig{Kind: protocol.SubjectTProxy}}, value)
+	if summary.ConnectLatencyP50NS != 20 || summary.ConnectLatencyP95NS != 40 || summary.ApplicationLatencyP50NS != 70 || summary.ApplicationLatencyP95NS != 150 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	markdown := string(Markdown(Summary{MatrixID: "test", Cases: []CaseSummary{summary}}))
+	if !strings.Contains(markdown, "## TCP short phases") || !strings.Contains(markdown, "| short |") {
+		t.Fatalf("markdown=%s", markdown)
 	}
 }
 

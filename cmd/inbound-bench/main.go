@@ -725,8 +725,10 @@ func measure(ctx context.Context, config protocol.Config, selected subject.Subje
 	duration := finishedAt.Sub(startedAt)
 	result := protocol.Repetition{
 		ProtocolVersion: protocol.Version, RunID: config.RunID, Subject: config.Subject.Kind, Index: index, Warmup: warmup,
-		StartedAt: startedAt, DurationNS: duration.Nanoseconds(), Counters: workerResult.Workload.Counters, LatencyNS: workerResult.Workload.LatencyNS,
-		Worker: &workerResult.Identity, WorkloadTiming: &workerResult.Workload.Timing, PathProof: proof, Validity: validity,
+		StartedAt: startedAt, DurationNS: duration.Nanoseconds(), Counters: workerResult.Workload.Counters,
+		LatencyNS: workerResult.Workload.LatencyNS, ConnectLatencyNS: workerResult.Workload.ConnectLatencyNS,
+		ApplicationLatencyNS: workerResult.Workload.ApplicationLatencyNS,
+		Worker:               &workerResult.Identity, WorkloadTiming: &workerResult.Workload.Timing, PathProof: proof, Validity: validity,
 		Resources: protocol.ResourceDelta{
 			WallNanoseconds: duration.Nanoseconds(), ClientUserTicks: workerResult.Process.UserTicks, ClientSystemTicks: workerResult.Process.SystemTicks,
 			ClientReadBytes: workerResult.Process.ReadBytes, ClientWriteBytes: workerResult.Process.WriteBytes, ClientRSSBytes: workerResult.Process.RSSBytes,
